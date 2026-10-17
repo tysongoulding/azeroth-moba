@@ -336,6 +336,11 @@ pub(crate) fn refresh_moba_hud(
             format!("DEAD (Respawn {:.1}s)", hero.respawn_timer)
         } else if hero.unstoppable_t > 0.0 {
             format!("UNSTOPPABLE ({:.1}s)", hero.unstoppable_t)
+        } else if hero.anti_magic_shell_t > 0.0 && hero.anti_magic_shell > 0.0 {
+            format!(
+                "ANTI-MAGIC ({:.0} | {:.1}s)",
+                hero.anti_magic_shell, hero.anti_magic_shell_t
+            )
         } else if hero.stun_t > 0.0 {
             format!("STUNNED ({:.1}s)", hero.stun_t)
         } else if hero.fear_t > 0.0 {
@@ -350,9 +355,10 @@ pub(crate) fn refresh_moba_hud(
         } else {
             ""
         };
+        let eff_arm = hero.effective_armor(team_lvl);
+        let eff_mr = hero.effective_magic_resist(team_lvl);
         **t = format!(
-            "{} ({}) [{}] {}  |  HP {:.0}/{:.0}  |  Power {:.0}/{:.0}  |  Gold {}g  |  K/D/A {}/{}/{}  |  Items {}/6 (Stash {})",
-            hero.name,
+            "{} [{}] {}  |  HP {:.0}/{:.0}  |  Power {:.0}/{:.0}  |  Arm {:.0} / MR {:.0}  |  Gold {}g  |  K/D/A {}/{}/{}  |  Items {}/6 (Stash {})",
             hero.card.display_title(),
             state_tag,
             aegis_str,
@@ -360,6 +366,8 @@ pub(crate) fn refresh_moba_hud(
             st.max_hp,
             hero.power,
             st.max_power,
+            eff_arm,
+            eff_mr,
             hero.gold,
             hero.kills,
             hero.deaths,
@@ -370,10 +378,10 @@ pub(crate) fn refresh_moba_hud(
     }
 
     if let Ok(mut t) = texts.p4().single_mut() {
-        let c = hero.class_def();
+        let h_def = hero.hero_def();
         let ult_name = hero
             .chosen_ultimate
-            .map(|idx| c.ultimates[idx.min(1)].name)
+            .map(|idx| h_def.ultimates[idx.min(1)].name)
             .unwrap_or("Locked (Lv 10)");
         let fmt_cd = |cd: f32| {
             if cd <= 0.05 {
@@ -384,16 +392,16 @@ pub(crate) fn refresh_moba_hud(
         };
         **t = format!(
             "[AUTO] {}  |  [Q] {}: {}  |  [W] {}: {}  |  [E] {}: {}  |  [R] {}: {}  |  [F] {}: {}",
-            c.auto_primary.name,
-            c.q_skill.name,
+            h_def.auto_primary.name,
+            h_def.q_skill.name,
             fmt_cd(hero.q_cd),
-            c.w_skill.name,
+            h_def.w_skill.name,
             fmt_cd(hero.w_cd),
-            c.e_skill.name,
+            h_def.e_skill.name,
             fmt_cd(hero.e_cd),
             ult_name,
             fmt_cd(hero.r_cd),
-            c.mobility.name,
+            h_def.mobility.name,
             fmt_cd(hero.f_cd),
         );
     }

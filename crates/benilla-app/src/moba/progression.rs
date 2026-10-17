@@ -1,11 +1,12 @@
 //! Unified Dual Progression:
 //! - HoTS Shared 5-Man Team XP Curve (`Level 1..=20`) with Underdog Comeback XP Multiplier (`+25%` per level behind when down >= 2 levels)
-//! - Non-Pausing 3-Card Milestone Drafts (`Levels 1, 4, 7, 10, 13, 16, 20`)
+//! - Non-Pausing 3-Card Milestone Drafts (`Levels 1, 4, 7, 10, 13, 16, 20`) tailored to each Hero's
+//!   `HeroType` (`Brawler`, `Damage`, `Support`) and `ThemeTag`s
 //! - Guaranteed Dual Heroic Ultimate (`R`) choice at Team Level 10
 
 use bevy::prelude::*;
 
-use super::data::{MobaAbilitySlot, MobaClassDef};
+use super::data::{HeroType, MobaAbilitySlot, MobaClassDef, MobaHeroDef};
 use crate::survivors::data::Stat;
 use crate::survivors::Rng;
 
@@ -47,14 +48,14 @@ impl CardRarity {
 /// Payload of a non-pausing 3-card milestone upgrade card.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum MilestoneCardKind {
-    /// Mutates one of the hero's class abilities (`AutoPrimary`, `Q`, `W`, `E`, `MobilityF`).
+    /// Mutates one of the hero's abilities (`AutoPrimary`, `Q`, `W`, `E`, `MobilityF`).
     AbilityMutator {
         slot: MobaAbilitySlot,
         bonus_dmg_pct: f32,
         cdr_pct: f32,
         bonus_radius: f32,
     },
-    /// Unlocks one of the class's two Heroic Ultimates (`0` or `1`) on `R` at Team Level 10!
+    /// Unlocks one of the hero's two Heroic Ultimates (`0` or `1`) on `R` at Team Level 10!
     HeroicUltimate { ult_index: usize },
     /// Raises a core hero stat (`Might`, `MaxHp`, `Speed`, `Haste`, `Armor`, `Crit`, `Regen`).
     StatBoost { stat: Stat, amount: f32 },
@@ -160,9 +161,205 @@ impl TeamProgression {
     }
 }
 
-/// Deals 3 Rarity-Colored Milestone Cards for `class` at `milestone_level`.
+/// Deals 3 Rarity-Colored Milestone Cards for `hero` (`MobaHeroDef`) at `milestone_level`.
 /// - At **Team Level 10**, slots 0 and 1 are GUARANTEED to be the hero's 2 Heroic Ultimates (`R`),
-///   and slot 2 is a `CardRarity::Legendary` passive mutator!
+///   and slot 2 is a Theme-Synergy `CardRarity::Legendary` passive mutator!
+pub fn deal_milestone_cards_for_hero(
+    hero: &MobaHeroDef,
+    milestone_level: u32,
+    rng: &mut Rng,
+) -> [MilestoneCard; 3] {
+    let primary_theme = hero
+        .themes
+        .first()
+        .map(|t| t.label())
+        .unwrap_or("Ascendant");
+
+    if milestone_level == 10 {
+        let u0 = &hero.ultimates[0];
+        let u1 = &hero.ultimates[1];
+        return [
+            MilestoneCard {
+                title: u0.name.to_string(),
+                subtitle: format!("Heroic Ultimate [R] ({primary_theme})"),
+                desc: u0.desc.to_string(),
+                spell_id: u0.spell_id,
+                rarity: CardRarity::Legendary,
+                kind: MilestoneCardKind::HeroicUltimate { ult_index: 0 },
+            },
+            MilestoneCard {
+                title: u1.name.to_string(),
+                subtitle: format!("Heroic Ultimate [R] ({primary_theme})"),
+                desc: u1.desc.to_string(),
+                spell_id: u1.spell_id,
+                rarity: CardRarity::Legendary,
+                kind: MilestoneCardKind::HeroicUltimate { ult_index: 1 },
+            },
+            MilestoneCard {
+                title: format!("Ascendant {primary_theme} Crest"),
+                subtitle: "Theme Legendary Mutator".to_string(),
+                desc: "+22% Might, +12% Haste, +160 Max HP.".to_string(),
+                spell_id: 20217,
+                rarity: CardRarity::Legendary,
+                kind: MilestoneCardKind::LegendaryMutator {
+                    might_bonus: 0.22,
+                    haste_bonus: 0.12,
+                    hp_bonus: 160.0,
+                },
+            },
+        ];
+    }
+
+    let base_rarity = match milestone_level {
+        1 => CardRarity::Uncommon,
+        4 | 7 => CardRarity::Rare,
+        13 | 16 => CardRarity::Epic,
+        _ => CardRarity::Legendary,
+    };
+
+    let scale = match base_rarity {
+        CardRarity::Common => 1.0,
+        CardRarity::Uncommon => 1.15,
+        CardRarity::Rare => 1.35,
+        CardRarity::Epic => 1.65,
+        CardRarity::Legendary => 2.0,
+    };
+
+    // Card 0: Hero Theme Ability Mutator (Q or W)
+    let (slot0, ab0) = if rng.next_u64() & 1 == 0 {
+        (MobaAbilitySlot::Q, &hero.q_skill)
+    } else {
+        (MobaAbilitySlot::W, &hero.w_skill)
+    };
+    let dmg_pct = (0.18_f32 * scale * 100.0).round() / 100.0;
+    let cdr_pct = (0.10_f32 * scale * 100.0).round() / 100.0;
+    let card0 = MilestoneCard {
+        title: format!("{primary_theme}-Forged {}", ab0.name),
+        subtitle: format!("[{}] Theme Mutator", slot0.hotkey_label()),
+        desc: format!(
+            "+{}% {} damage/healing and -{}% cooldown.",
+            (dmg_pct * 100.0).round() as u32,
+            ab0.name,
+            (cdr_pct * 100.0).round() as u32
+        ),
+        spell_id: ab0.spell_id,
+        rarity: base_rarity,
+        kind: MilestoneCardKind::AbilityMutator {
+            slot: slot0,
+            bonus_dmg_pct: dmg_pct,
+            cdr_pct,
+            bonus_radius: 1.0,
+        },
+    };
+
+    // Card 1: E or AutoPrimary Mutator
+    let (slot1, ab1) = if milestone_level >= 7 {
+        (MobaAbilitySlot::E, &hero.e_skill)
+    } else {
+        (MobaAbilitySlot::AutoPrimary, &hero.auto_primary)
+    };
+    let card1 = MilestoneCard {
+        title: format!("Mastered {}", ab1.name),
+        subtitle: format!("[{}] Tactical Mutator", slot1.hotkey_label()),
+        desc: format!(
+            "+{}% {} power, -{}% cooldown, +1.5 yd radius.",
+            (dmg_pct * 110.0).round() as u32,
+            ab1.name,
+            (cdr_pct * 100.0).round() as u32
+        ),
+        spell_id: ab1.spell_id,
+        rarity: base_rarity,
+        kind: MilestoneCardKind::AbilityMutator {
+            slot: slot1,
+            bonus_dmg_pct: dmg_pct * 1.1,
+            cdr_pct,
+            bonus_radius: 1.5,
+        },
+    };
+
+    // Card 2: Type & Theme Synergy Card
+    let card2 = if milestone_level >= 16 {
+        MilestoneCard {
+            title: format!("Avatar of {primary_theme}"),
+            subtitle: "Theme Capstone Mutator".to_string(),
+            desc: "+25% Might, +15% Haste, +200 Max HP.".to_string(),
+            spell_id: 19740,
+            rarity: CardRarity::Legendary,
+            kind: MilestoneCardKind::LegendaryMutator {
+                might_bonus: 0.25,
+                haste_bonus: 0.15,
+                hp_bonus: 200.0,
+            },
+        }
+    } else {
+        let (stat, amount, name, spell_id, desc) = match (hero.hero_type, rng.index(3)) {
+            (HeroType::Brawler, 0) => (
+                Stat::Armor,
+                4.5 * scale,
+                "Vanguard Bulwark & Spellward",
+                2565,
+                format!(
+                    "+{:.1} Armor and +{:.1} Magic Resist.",
+                    4.5 * scale,
+                    3.6 * scale
+                ),
+            ),
+            (HeroType::Brawler, _) => (
+                Stat::MaxHp,
+                0.18 * scale,
+                "Juggernaut Vitality",
+                1243,
+                format!("+{}% Maximum Health.", (18.0_f32 * scale).round() as u32),
+            ),
+            (HeroType::Damage, 0) => (
+                Stat::Might,
+                0.16 * scale,
+                "Penetrating Strikes",
+                19740,
+                format!(
+                    "+{}% Damage & Shred Potency.",
+                    (16.0_f32 * scale).round() as u32
+                ),
+            ),
+            (HeroType::Damage, _) => (
+                Stat::Crit,
+                0.08 * scale,
+                "Lethal Precision",
+                1459,
+                format!("+{}% Critical Strike Chance.", (8.0_f32 * scale).round() as u32),
+            ),
+            (HeroType::Support, 0) => (
+                Stat::Haste,
+                0.12 * scale,
+                "Channeled Ley-Haste",
+                1459,
+                format!("+{}% Ability Haste.", (12.0_f32 * scale).round() as u32),
+            ),
+            (HeroType::Support, _) => (
+                Stat::Might,
+                0.15 * scale,
+                "Sanctified Grace",
+                20217,
+                format!(
+                    "+{}% Healing & Spell Power.",
+                    (15.0_f32 * scale).round() as u32
+                ),
+            ),
+        };
+        MilestoneCard {
+            title: name.to_string(),
+            subtitle: format!("{} Synergy", hero.hero_type.short_label()),
+            desc,
+            spell_id,
+            rarity: base_rarity,
+            kind: MilestoneCardKind::StatBoost { stat, amount },
+        }
+    };
+
+    [card0, card1, card2]
+}
+
+/// Deals 3 Rarity-Colored Milestone Cards for `class` (`MobaClassDef`) at `milestone_level`.
 pub fn deal_milestone_cards(
     class: &MobaClassDef,
     milestone_level: u32,
@@ -203,136 +400,12 @@ pub fn deal_milestone_cards(
         ];
     }
 
-    let base_rarity = match milestone_level {
-        1 => CardRarity::Uncommon,
-        4 | 7 => CardRarity::Rare,
-        13 | 16 => CardRarity::Epic,
-        _ => CardRarity::Legendary,
-    };
-
-    let scale = match base_rarity {
-        CardRarity::Common => 1.0,
-        CardRarity::Uncommon => 1.15,
-        CardRarity::Rare => 1.35,
-        CardRarity::Epic => 1.65,
-        CardRarity::Legendary => 2.0,
-    };
-
-    // Card 0: Class Ability Mutator (Q or W)
-    let (slot0, ab0) = if rng.next_u64() & 1 == 0 {
-        (MobaAbilitySlot::Q, &class.q_skill)
-    } else {
-        (MobaAbilitySlot::W, &class.w_skill)
-    };
-    let dmg_pct = (0.18_f32 * scale * 100.0).round() / 100.0;
-    let cdr_pct = (0.10_f32 * scale * 100.0).round() / 100.0;
-    let card0 = MilestoneCard {
-        title: format!("Empowered {}", ab0.name),
-        subtitle: format!("[{}] Ability Mutator", slot0.hotkey_label()),
-        desc: format!(
-            "+{}% {} damage/healing and -{}% cooldown.",
-            (dmg_pct * 100.0).round() as u32,
-            ab0.name,
-            (cdr_pct * 100.0).round() as u32
-        ),
-        spell_id: ab0.spell_id,
-        rarity: base_rarity,
-        kind: MilestoneCardKind::AbilityMutator {
-            slot: slot0,
-            bonus_dmg_pct: dmg_pct,
-            cdr_pct,
-            bonus_radius: 1.0,
-        },
-    };
-
-    // Card 1: E or AutoPrimary Mutator
-    let (slot1, ab1) = if milestone_level >= 7 {
-        (MobaAbilitySlot::E, &class.e_skill)
-    } else {
-        (MobaAbilitySlot::AutoPrimary, &class.auto_primary)
-    };
-    let card1 = MilestoneCard {
-        title: format!("Mastered {}", ab1.name),
-        subtitle: format!("[{}] Tactical Mutator", slot1.hotkey_label()),
-        desc: format!(
-            "+{}% {} power, -{}% cooldown, +1.5 yd radius.",
-            (dmg_pct * 110.0).round() as u32,
-            ab1.name,
-            (cdr_pct * 100.0).round() as u32
-        ),
-        spell_id: ab1.spell_id,
-        rarity: base_rarity,
-        kind: MilestoneCardKind::AbilityMutator {
-            slot: slot1,
-            bonus_dmg_pct: dmg_pct * 1.1,
-            cdr_pct,
-            bonus_radius: 1.5,
-        },
-    };
-
-    // Card 2: Role-tuned Stat / Legendary Mutator
-    let card2 = if milestone_level >= 16 {
-        MilestoneCard {
-            title: "High Warlord's Surge".to_string(),
-            subtitle: "Legendary Mutator".to_string(),
-            desc: "+25% Might, +15% Haste, +200 Max HP.".to_string(),
-            spell_id: 19740,
-            rarity: CardRarity::Legendary,
-            kind: MilestoneCardKind::LegendaryMutator {
-                might_bonus: 0.25,
-                haste_bonus: 0.15,
-                hp_bonus: 200.0,
-            },
-        }
-    } else {
-        let (stat, amount, name, spell_id, desc) = match rng.index(4) {
-            0 => (
-                Stat::Might,
-                0.15 * scale,
-                "Blessing of Might",
-                19740,
-                format!(
-                    "+{}% all Damage and Healing.",
-                    (15.0_f32 * scale).round() as u32
-                ),
-            ),
-            1 => (
-                Stat::MaxHp,
-                0.18 * scale,
-                "Power Word: Fortitude",
-                1243,
-                format!("+{}% Maximum Health.", (18.0_f32 * scale).round() as u32),
-            ),
-            2 => (
-                Stat::Haste,
-                0.10 * scale,
-                "Arcane Brilliance",
-                1459,
-                format!("+{}% Ability Haste.", (10.0_f32 * scale).round() as u32),
-            ),
-            _ => (
-                Stat::Speed,
-                0.10 * scale,
-                "Aspect of the Pack",
-                13159,
-                format!("+{}% Movement Speed.", (10.0_f32 * scale).round() as u32),
-            ),
-        };
-        MilestoneCard {
-            title: name.to_string(),
-            subtitle: "Talent Blessing".to_string(),
-            desc,
-            spell_id,
-            rarity: base_rarity,
-            kind: MilestoneCardKind::StatBoost { stat, amount },
-        }
-    };
-
-    [card0, card1, card2]
+    let hero = super::data::moba_hero_by_index(class.survivors_idx);
+    deal_milestone_cards_for_hero(hero, milestone_level, rng)
 }
 
 /// Deals 3 Legendary cards to every member of the team that slays the Center Raid Boss.
-pub fn deal_legendary_boss_cards(class: &MobaClassDef) -> [MilestoneCard; 3] {
+pub fn deal_legendary_boss_cards_for_hero(hero: &MobaHeroDef) -> [MilestoneCard; 3] {
     [
         MilestoneCard {
             title: "Might of the Scourge".to_string(),
@@ -347,13 +420,13 @@ pub fn deal_legendary_boss_cards(class: &MobaClassDef) -> [MilestoneCard; 3] {
             },
         },
         MilestoneCard {
-            title: format!("Overcharged {}", class.q_skill.name),
+            title: format!("Overcharged {}", hero.q_skill.name),
             subtitle: "Raid Boss Legendary".to_string(),
             desc: format!(
                 "+40% {} damage/healing and -20% cooldown.",
-                class.q_skill.name
+                hero.q_skill.name
             ),
-            spell_id: class.q_skill.spell_id,
+            spell_id: hero.q_skill.spell_id,
             rarity: CardRarity::Legendary,
             kind: MilestoneCardKind::AbilityMutator {
                 slot: MobaAbilitySlot::Q,
@@ -375,4 +448,9 @@ pub fn deal_legendary_boss_cards(class: &MobaClassDef) -> [MilestoneCard; 3] {
             },
         },
     ]
+}
+
+/// Deals 3 Legendary cards for `class` (backwards-compatible wrapper).
+pub fn deal_legendary_boss_cards(class: &MobaClassDef) -> [MilestoneCard; 3] {
+    deal_legendary_boss_cards_for_hero(super::data::moba_hero_by_index(class.survivors_idx))
 }

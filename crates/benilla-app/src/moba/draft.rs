@@ -1,16 +1,22 @@
-//! Dual-Mode Hero Draft & Team Composition Balancing (`TavernBenchShuffle` vs `AllPick`).
+//! Dual-Mode Hero Draft & Team Composition Balancing (`TavernBenchShuffle` vs `AllPick`)
+//! across the 36-Hero Theme Roster (`MOBA_HEROES`).
+//!
+//! Every hero belongs to one of the 3 Core Combat Types (`HeroType::Brawler`, `HeroType::Damage`,
+//! `HeroType::Support`), a `DamageProfile` (`Physical`, `Magic`, `Hybrid`), and 2–4 `ThemeTag`s.
 //!
 //! In `TavernBenchShuffle` (HoTS ARAM Shuffle Pick + LoL ARAM Shared Reroll Bench):
-//! - Deals 3 random Class/Spec Hero Cards to the player.
+//! - Deals 3 distinct Theme-Hero Cards from `MOBA_HEROES` (`0..36`) to the player.
 //! - Maintains a Shared Team Bench (`bench`) holding up to 6 unpicked/rerolled cards.
-//! - Supports `reroll_hand()` (moves unpicked cards to the bench and deals 3 new cards) and
-//!   `swap_with_bench(bench_idx)`.
+//! - Supports `reroll_hand()`, `swap_with_bench(bench_idx)`, and `cycle_hero()` (All Pick).
 //! - Automatically balances every 5-man team (`auto_balance_team_roster`) so every team of 5
-//!   is guaranteed to field at least **1 Tank, 1 Healer, and 3 DPS**.
+//!   fields at least **1 Brawler (Tank), 1 Support (Healer), and 3 DPS (including Ranged Damage)**.
 
 use bevy::prelude::*;
 
-use super::data::{moba_class_by_index, HeroRole, Team, MOBA_CLASSES};
+use super::data::{
+    moba_class_by_index, moba_hero_by_index, DamageProfile, HeroRole, HeroType, MobaHeroDef, Team,
+    ThemeTag, MOBA_CLASSES, MOBA_HEROES,
+};
 use crate::survivors::Rng;
 
 pub const MAX_BENCH_CARDS: usize = 6;
@@ -41,10 +47,12 @@ impl DraftMode {
     }
 }
 
-/// A Class/Spec Hero Card dealt in the Tavern Bench Shuffle or chosen in All Pick.
+/// A Theme-Hero Card dealt in the Tavern Bench Shuffle or chosen in All Pick (`0..36`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct HeroCard {
-    /// Index into `MOBA_CLASSES` (`0..9`).
+    /// Index into `MOBA_HEROES` (`0..36`).
+    pub hero_idx: usize,
+    /// Index into `MOBA_CLASSES` (`0..9`) for base animation/class visual compatibility.
     pub class_idx: usize,
     pub spec_name: &'static str,
     pub role: HeroRole,
@@ -53,98 +61,135 @@ pub struct HeroCard {
 }
 
 impl HeroCard {
+    pub fn hero_def(&self) -> &'static MobaHeroDef {
+        moba_hero_by_index(self.hero_idx)
+    }
+
     pub fn class_def(&self) -> &'static super::data::MobaClassDef {
         moba_class_by_index(self.class_idx)
     }
 
+    pub fn hero_type(&self) -> HeroType {
+        self.hero_def().hero_type
+    }
+
+    pub fn damage_profile(&self) -> DamageProfile {
+        self.hero_def().damage_profile
+    }
+
+    pub fn themes(&self) -> &'static [ThemeTag] {
+        self.hero_def().themes
+    }
+
     pub fn display_title(&self) -> String {
+        let h = self.hero_def();
         format!(
-            "{} {} ({})",
-            self.spec_name,
-            self.class_def().name,
-            self.role.label()
+            "{} — {} [{}: {} | {}]",
+            h.name,
+            h.title,
+            h.hero_type.short_label(),
+            h.damage_profile.label(),
+            h.themes_summary()
         )
     }
 }
 
-/// Template pool of iconic Vanilla WoW Class/Spec archetypes across all 9 classes.
-pub static TAVERN_POOL: &[(usize, &str, HeroRole)] = &[
-    (0, "Protection", HeroRole::Tank),
-    (0, "Arms", HeroRole::MeleeDps),
-    (1, "Protection", HeroRole::Tank),
-    (1, "Holy", HeroRole::Healer),
-    (1, "Retribution", HeroRole::MeleeDps),
-    (2, "Marksmanship", HeroRole::RangedDps),
-    (2, "Beast Mastery", HeroRole::RangedDps),
-    (3, "Subtlety", HeroRole::MeleeDps),
-    (3, "Combat", HeroRole::MeleeDps),
-    (4, "Discipline", HeroRole::Healer),
-    (4, "Shadow", HeroRole::RangedDps),
-    (5, "Restoration", HeroRole::Healer),
-    (5, "Elemental", HeroRole::RangedDps),
-    (6, "Frostfire", HeroRole::RangedDps),
-    (7, "Destruction", HeroRole::RangedDps),
-    (8, "Restoration", HeroRole::Healer),
-    (8, "Feral Guardian", HeroRole::Tank),
-    (8, "Balance", HeroRole::RangedDps),
-];
-
-fn make_card_from_template(tpl_idx: usize, team: Team, rng: &mut Rng) -> HeroCard {
-    let &(class_idx, spec_name, role) = &TAVERN_POOL[tpl_idx % TAVERN_POOL.len()];
-    let races = team.default_races();
-    let race = races[rng.index(races.len())];
-    let sex = (rng.next_u64() & 1) as u8;
+/// Builds a `HeroCard` directly from `MOBA_HEROES[hero_idx]`.
+pub fn card_for_hero_index(hero_idx: usize) -> HeroCard {
+    let idx = hero_idx.min(MOBA_HEROES.len() - 1);
+    let h = &MOBA_HEROES[idx];
     HeroCard {
-        class_idx,
-        spec_name,
-        role,
-        race,
-        sex,
+        hero_idx: idx,
+        class_idx: h.class_idx,
+        spec_name: h.title,
+        role: h.role,
+        race: h.default_race(),
+        sex: h.default_sex(),
     }
 }
 
+/// Builds a `HeroCard` for `class_idx` (`0..9`) and `race`/`sex`, selecting a matching hero from `MOBA_HEROES`.
 pub fn card_for_class(class_idx: usize, race: u8, sex: u8) -> HeroCard {
-    let idx = class_idx.min(MOBA_CLASSES.len() - 1);
-    let def = &MOBA_CLASSES[idx];
-    let spec_name = match def.id {
-        1 => "Arms & Prot",
-        2 => "Crusader",
-        3 => "Marksmanship",
-        4 => "Assassination",
-        5 => "Holy Discipline",
-        7 => "Storm Restoration",
-        8 => "Archmage",
-        9 => "Demonology",
-        _ => "Archdruid",
-    };
+    let c_idx = class_idx.min(MOBA_CLASSES.len() - 1);
+    let hero_idx = MOBA_HEROES
+        .iter()
+        .position(|h| h.class_idx == c_idx && h.default_race() == race)
+        .or_else(|| MOBA_HEROES.iter().position(|h| h.class_idx == c_idx))
+        .unwrap_or(0);
+    let h = &MOBA_HEROES[hero_idx];
     HeroCard {
-        class_idx: idx,
-        spec_name,
-        role: def.role,
+        hero_idx,
+        class_idx: c_idx,
+        spec_name: h.title,
+        role: h.role,
         race,
         sex,
     }
 }
 
-/// Pick a random `HeroCard` matching `target_role` for `team`.
-pub fn random_card_for_role(target_role: HeroRole, team: Team, rng: &mut Rng) -> HeroCard {
-    let matching: Vec<usize> = TAVERN_POOL
+/// Pick a random `HeroCard` from `MOBA_HEROES` matching `target_role`.
+pub fn random_card_for_role(target_role: HeroRole, _team: Team, rng: &mut Rng) -> HeroCard {
+    let matching: Vec<usize> = MOBA_HEROES
         .iter()
         .enumerate()
-        .filter(|(_, &(_, _, r))| r == target_role)
+        .filter(|(_, h)| h.role == target_role)
         .map(|(i, _)| i)
         .collect();
-    let tpl_idx = if matching.is_empty() {
+    let hero_idx = if matching.is_empty() {
         0
     } else {
         matching[rng.index(matching.len())]
     };
-    make_card_from_template(tpl_idx, team, rng)
+    card_for_hero_index(hero_idx)
+}
+
+/// Pick a random `HeroCard` from `MOBA_HEROES` matching `target_type` (`Brawler`, `Damage`, `Support`).
+pub fn random_card_for_type(target_type: HeroType, rng: &mut Rng) -> HeroCard {
+    let matching: Vec<usize> = MOBA_HEROES
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| h.hero_type == target_type)
+        .map(|(i, _)| i)
+        .collect();
+    let hero_idx = if matching.is_empty() {
+        0
+    } else {
+        matching[rng.index(matching.len())]
+    };
+    card_for_hero_index(hero_idx)
+}
+
+fn pick_distinct_card_for_role(
+    target_role: HeroRole,
+    used_heroes: &mut Vec<usize>,
+    rng: &mut Rng,
+) -> HeroCard {
+    let candidates: Vec<usize> = MOBA_HEROES
+        .iter()
+        .enumerate()
+        .filter(|(idx, h)| h.role == target_role && !used_heroes.contains(idx))
+        .map(|(idx, _)| idx)
+        .collect();
+    let chosen = if !candidates.is_empty() {
+        candidates[rng.index(candidates.len())]
+    } else {
+        let fallback: Vec<usize> = MOBA_HEROES
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| h.role == target_role)
+            .map(|(idx, _)| idx)
+            .collect();
+        fallback[rng.index(fallback.len())]
+    };
+    used_heroes.push(chosen);
+    card_for_hero_index(chosen)
 }
 
 /// Automatically builds a balanced 5-man team roster (`[lead_card, bot1, bot2, bot3, bot4]`)
-/// guaranteeing at least **1 Tank, 1 Healer, and 3 DPS** (`MeleeDps` / `RangedDps`).
-pub fn auto_balance_team_roster(lead_card: HeroCard, rng: &mut Rng, team: Team) -> [HeroCard; 5] {
+/// guaranteeing:
+/// - At least **1 `HeroType::Brawler` (`Tank`)**, **1 `HeroType::Support` (`Healer`)**, and **3 DPS**
+///   (including at least **1 `HeroType::Damage` (`RangedDps`)** and **1 Melee `Brawler`**).
+pub fn auto_balance_team_roster(lead_card: HeroCard, rng: &mut Rng, _team: Team) -> [HeroCard; 5] {
     let needed_roles: [HeroRole; 4] = match lead_card.role {
         HeroRole::Tank => [
             HeroRole::Healer,
@@ -172,24 +217,42 @@ pub fn auto_balance_team_roster(lead_card: HeroCard, rng: &mut Rng, team: Team) 
         ],
     };
 
+    let mut used = vec![lead_card.hero_idx];
     [
         lead_card,
-        random_card_for_role(needed_roles[0], team, rng),
-        random_card_for_role(needed_roles[1], team, rng),
-        random_card_for_role(needed_roles[2], team, rng),
-        random_card_for_role(needed_roles[3], team, rng),
+        pick_distinct_card_for_role(needed_roles[0], &mut used, rng),
+        pick_distinct_card_for_role(needed_roles[1], &mut used, rng),
+        pick_distinct_card_for_role(needed_roles[2], &mut used, rng),
+        pick_distinct_card_for_role(needed_roles[3], &mut used, rng),
     ]
 }
 
-/// Check if a 5-man team satisfies the `1 Tank + 1 Healer + 3 DPS` composition rule.
+/// Checks if a 5-man team satisfies the 3-Type (`Brawler` + `Damage` + `Support`) composition rule.
+pub fn is_roster_type_balanced(roster: &[HeroCard; 5]) -> bool {
+    let brawlers = roster
+        .iter()
+        .filter(|c| c.hero_type() == HeroType::Brawler)
+        .count();
+    let damage = roster
+        .iter()
+        .filter(|c| c.hero_type() == HeroType::Damage)
+        .count();
+    let supports = roster
+        .iter()
+        .filter(|c| c.hero_type() == HeroType::Support)
+        .count();
+    brawlers >= 1 && damage >= 1 && supports >= 1
+}
+
+/// Check if a 5-man team satisfies both `1 Tank + 1 Healer + 3 DPS` and `1 Brawler + 1 Damage + 1 Support`.
 pub fn is_roster_role_balanced(roster: &[HeroCard; 5]) -> bool {
     let tanks = roster.iter().filter(|c| c.role == HeroRole::Tank).count();
     let healers = roster.iter().filter(|c| c.role == HeroRole::Healer).count();
     let dps = roster.iter().filter(|c| c.role.is_dps()).count();
-    tanks >= 1 && healers >= 1 && dps >= 3
+    tanks >= 1 && healers >= 1 && dps >= 3 && is_roster_type_balanced(roster)
 }
 
-/// Resource tracking the current Tavern Bench Shuffle / All-Pick state.
+/// Resource tracking the current Tavern Bench Shuffle / All-Pick state across the 36-Hero roster.
 #[derive(Resource, Clone, Debug)]
 pub struct TavernDraftState {
     pub mode: DraftMode,
@@ -210,22 +273,22 @@ impl Default for TavernDraftState {
 }
 
 impl TavernDraftState {
+    /// Deals a 3-card hand (`1 Brawler`, `1 Damage`, `1 Support`) and 4 bench cards from `MOBA_HEROES`.
     pub fn new_shuffle(rng: &mut Rng, player_team: Team) -> Self {
-        let mut hand = Vec::with_capacity(HAND_SIZE);
-        let mut used_classes = Vec::new();
-        while hand.len() < HAND_SIZE {
-            let tpl = rng.index(TAVERN_POOL.len());
-            let card = make_card_from_template(tpl, player_team, rng);
-            if !used_classes.contains(&card.class_idx) || hand.len() + 1 >= TAVERN_POOL.len() {
-                used_classes.push(card.class_idx);
-                hand.push(card);
-            }
-        }
+        let hand = vec![
+            random_card_for_type(HeroType::Brawler, rng),
+            random_card_for_type(HeroType::Damage, rng),
+            random_card_for_type(HeroType::Support, rng),
+        ];
 
+        let mut used_indices: Vec<usize> = hand.iter().map(|c| c.hero_idx).collect();
         let mut bench = Vec::with_capacity(MAX_BENCH_CARDS);
-        for _ in 0..4 {
-            let tpl = rng.index(TAVERN_POOL.len());
-            bench.push(make_card_from_template(tpl, player_team, rng));
+        while bench.len() < 4 {
+            let idx = rng.index(MOBA_HEROES.len());
+            if !used_indices.contains(&idx) {
+                used_indices.push(idx);
+                bench.push(card_for_hero_index(idx));
+            }
         }
 
         let player_card = hand[0];
@@ -270,7 +333,7 @@ impl TavernDraftState {
     }
 
     /// Rerolls the player's 3-card hand, moving the previously selected card onto the shared
-    /// Team Bench (`bench`, capped at `MAX_BENCH_CARDS`), and deals 3 fresh cards.
+    /// Team Bench (`bench`, capped at `MAX_BENCH_CARDS`), and deals 3 fresh cards (`Brawler`, `Damage`, `Support`).
     pub fn reroll_hand(&mut self, rng: &mut Rng) -> bool {
         if self.rerolls_left == 0 {
             return false;
@@ -282,17 +345,11 @@ impl TavernDraftState {
         }
         self.bench.push(old_card);
 
-        let mut new_hand = Vec::with_capacity(HAND_SIZE);
-        let mut used = Vec::new();
-        while new_hand.len() < HAND_SIZE {
-            let tpl = rng.index(TAVERN_POOL.len());
-            let card = make_card_from_template(tpl, self.player_team, rng);
-            if !used.contains(&card.class_idx) {
-                used.push(card.class_idx);
-                new_hand.push(card);
-            }
-        }
-        self.player_hand = new_hand;
+        self.player_hand = vec![
+            random_card_for_type(HeroType::Brawler, rng),
+            random_card_for_type(HeroType::Damage, rng),
+            random_card_for_type(HeroType::Support, rng),
+        ];
         self.selected_hand_idx = 0;
         self.rebuild_rosters(rng);
         true
@@ -307,6 +364,27 @@ impl TavernDraftState {
         std::mem::swap(&mut self.player_hand[hand_idx], &mut self.bench[bench_idx]);
         self.rebuild_rosters(rng);
         true
+    }
+
+    /// Cycles the active player card through all 36 heroes in `MOBA_HEROES` (`0..36`).
+    pub fn cycle_hero(&mut self, rng: &mut Rng) -> HeroCard {
+        let cur_idx = self.active_player_card().hero_idx;
+        let next_idx = (cur_idx + 1) % MOBA_HEROES.len();
+        self.set_hero_index(next_idx, rng)
+    }
+
+    /// Directly selects `MOBA_HEROES[hero_idx]` as the player's active hero card.
+    pub fn set_hero_index(&mut self, hero_idx: usize, rng: &mut Rng) -> HeroCard {
+        let card = card_for_hero_index(hero_idx);
+        if self.player_hand.is_empty() {
+            self.player_hand.push(card);
+            self.selected_hand_idx = 0;
+        } else {
+            let idx = self.selected_hand_idx.min(self.player_hand.len() - 1);
+            self.player_hand[idx] = card;
+        }
+        self.rebuild_rosters(rng);
+        card
     }
 
     /// Sets the player's card from direct class/race/sex selection on the menu tower.

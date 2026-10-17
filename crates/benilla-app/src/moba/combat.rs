@@ -1,12 +1,14 @@
-//! Hybrid Action-MOBA Combat, Classic WoW 15s PvP Diminishing Returns (`DrTracker`),
-//! LoL ARAM Fountain Shop Lock, Dota 2 Goblin Courier, Gryphon/Wyvern Fast-Launch,
-//! Soulstone Buyback, Aegis Soulstone In-Place Revival, and BKB Medallion Cleanse.
+//! Hybrid Action-MOBA Combat, Dual-Mitigation (`Armor` vs `Magic Resist` + `-Armor` / `-Magic` Shred),
+//! `Anti-Magic` Spell Shields, `Webs` Snares, `Poison`/`Affliction` DoTs, Classic WoW 15s PvP
+//! Diminishing Returns (`DrTracker`), LoL ARAM Fountain Shop Lock, Dota 2 Goblin Courier,
+//! Gryphon/Wyvern Fast-Launch, Soulstone Buyback, Aegis Soulstone In-Place Revival, and BKB Cleanse.
 
 use bevy::prelude::*;
 
 use super::data::{
-    moba_class_by_index, shop_item, ActiveItemEffect, CcCategory, HeroRole, MobaAbilityDef,
-    MobaAbilitySlot, MobaClassDef, PowerType, ShopItemDef, Team,
+    moba_class_by_index, shop_item, ActiveItemEffect, CcCategory, DamageProfile, DamageSchool,
+    HeroRole, HeroType, MobaAbilityDef, MobaAbilitySlot, MobaClassDef, MobaHeroDef, PowerType,
+    ShopItemDef, Team, ThemeTag,
 };
 use super::draft::HeroCard;
 use super::lane::FOUNTAIN_X;
@@ -22,6 +24,7 @@ pub const MOUNT_LAUNCH_SPEED_MULT: f32 = 3.0; // +200% speed boost!
 pub const BUYBACK_COOLDOWN: f32 = 360.0;
 pub const AEGIS_REVIVE_SECS: f32 = 3.0;
 pub const MAX_INVENTORY_SLOTS: usize = 6;
+pub const MAX_SHRED_STACK: f32 = 45.0;
 
 /// One CC category's 15-second Diminishing Returns state.
 #[derive(Clone, Copy, Debug, Default)]
@@ -100,13 +103,16 @@ pub struct SlotMutator {
     pub bonus_radius: f32,
 }
 
-/// Aggregated derived stats for a `MobaHero` (from base class + team level + cards + inventory items + runes).
+/// Aggregated derived stats for a `MobaHero` (from base hero + team level + cards + inventory items + runes).
 #[derive(Clone, Copy, Debug)]
 pub struct HeroDerivedStats {
     pub max_hp: f32,
     pub max_power: f32,
     pub might: f32,
     pub armor: f32,
+    pub magic_resist: f32,
+    pub armor_shred_on_hit: f32,
+    pub magic_shred_on_hit: f32,
     pub speed: f32,
     pub haste: f32,
     pub crit: f32,
@@ -148,8 +154,20 @@ pub struct MobaHero {
     pub card_speed_bonus_pct: f32,
     pub card_haste_bonus: f32,
     pub card_armor_bonus: f32,
+    pub card_magic_resist_bonus: f32,
     pub card_crit_bonus: f32,
     pub card_regen_bonus: f32,
+
+    // Dual-Mitigation Shreds (-Armor, -Magic), Anti-Magic Shell, and Poison/Affliction DoT
+    pub armor_shred: f32,
+    pub armor_shred_t: f32,
+    pub magic_shred: f32,
+    pub magic_shred_t: f32,
+    pub anti_magic_shell: f32,
+    pub anti_magic_shell_t: f32,
+    pub poison_dps: f32,
+    pub poison_t: f32,
+    pub heal_cut_pct: f32,
 
     // Crowd Control & Classic WoW 15s Diminishing Returns
     pub dr_tracker: DrTracker,
@@ -206,10 +224,10 @@ impl MobaHero {
         is_ai_controlled: bool,
         slot_in_team: usize,
     ) -> Self {
-        let class = card.class_def();
+        let hero_def = card.hero_def();
         let spawn_pos = Self::fountain_pos_for(team, slot_in_team);
-        let init_power = match class.power_type {
-            PowerType::Mana | PowerType::Energy => class.base_power,
+        let init_power = match hero_def.power_type {
+            PowerType::Mana | PowerType::Energy => hero_def.base_power,
             PowerType::Rage => 0.0,
         };
         Self {
@@ -224,7 +242,7 @@ impl MobaHero {
             } else {
                 std::f32::consts::PI
             },
-            hp: class.base_hp,
+            hp: hero_def.base_hp,
             power: init_power,
             shield: 0.0,
             shield_t: 0.0,
@@ -244,8 +262,18 @@ impl MobaHero {
             card_speed_bonus_pct: 0.0,
             card_haste_bonus: 0.0,
             card_armor_bonus: 0.0,
+            card_magic_resist_bonus: 0.0,
             card_crit_bonus: 0.0,
             card_regen_bonus: 0.0,
+            armor_shred: 0.0,
+            armor_shred_t: 0.0,
+            magic_shred: 0.0,
+            magic_shred_t: 0.0,
+            anti_magic_shell: 0.0,
+            anti_magic_shell_t: 0.0,
+            poison_dps: 0.0,
+            poison_t: 0.0,
+            heal_cut_pct: 0.0,
             dr_tracker: DrTracker::default(),
             stun_t: 0.0,
             root_t: 0.0,
@@ -296,6 +324,10 @@ impl MobaHero {
         Vec2::new(base.x, z_off)
     }
 
+    pub fn hero_def(&self) -> &'static MobaHeroDef {
+        self.card.hero_def()
+    }
+
     pub fn class_def(&self) -> &'static MobaClassDef {
         moba_class_by_index(self.card.class_idx)
     }
@@ -304,18 +336,45 @@ impl MobaHero {
         self.card.role
     }
 
+    pub fn hero_type(&self) -> HeroType {
+        self.card.hero_type()
+    }
+
+    pub fn damage_profile(&self) -> DamageProfile {
+        self.card.damage_profile()
+    }
+
+    pub fn themes(&self) -> &'static [ThemeTag] {
+        self.card.themes()
+    }
+
+    pub fn has_theme(&self, tag: ThemeTag) -> bool {
+        self.hero_def().has_theme(tag)
+    }
+
     /// Computes current aggregated hero stats at `team_level`.
     pub fn stats(&self, team_level: u32) -> HeroDerivedStats {
-        let c = self.class_def();
+        let h = self.hero_def();
         let lvl = team_level.saturating_sub(1) as f32;
         let mut max_hp =
-            (c.base_hp + lvl * 52.0 + self.card_hp_flat) * (1.0 + self.card_hp_bonus_pct);
-        let max_power = match c.power_type {
-            PowerType::Mana => c.base_power + lvl * 28.0,
+            (h.base_hp + lvl * 52.0 + self.card_hp_flat) * (1.0 + self.card_hp_bonus_pct);
+        let max_power = match h.power_type {
+            PowerType::Mana => h.base_power + lvl * 28.0,
             PowerType::Rage | PowerType::Energy => 100.0,
         };
         let mut might = 1.0 + lvl * 0.04 + self.card_might_bonus;
-        let mut armor = c.base_armor + lvl * 0.9 + self.card_armor_bonus;
+        let mut armor = h.base_armor + lvl * 0.9 + self.card_armor_bonus;
+        let mut magic_resist = h.base_magic_resist + lvl * 0.8 + self.card_magic_resist_bonus;
+        let mut armor_shred_on_hit = if self.has_theme(ThemeTag::MinusArmor) {
+            3.0
+        } else {
+            0.0
+        };
+        let mut magic_shred_on_hit = if self.has_theme(ThemeTag::MinusMagic) {
+            3.0
+        } else {
+            0.0
+        };
         let mut speed_pct = self.card_speed_bonus_pct;
         let mut haste = self.card_haste_bonus;
         let mut crit = 0.06 + self.card_crit_bonus;
@@ -326,6 +385,9 @@ impl MobaHero {
             max_hp += item.bonus_hp;
             might += item.bonus_might;
             armor += item.bonus_armor;
+            magic_resist += item.bonus_magic_resist();
+            armor_shred_on_hit += item.armor_shred_on_hit();
+            magic_shred_on_hit += item.magic_shred_on_hit();
             speed_pct += item.bonus_speed_pct;
             haste += item.bonus_haste;
             crit += item.bonus_crit;
@@ -343,7 +405,7 @@ impl MobaHero {
             haste += (self.haste_buff_mult - 1.0) * 0.5;
         }
 
-        let mut speed = c.base_speed * (1.0 + speed_pct);
+        let mut speed = h.base_speed * (1.0 + speed_pct);
         if self.mount_launch_t > 0.0 {
             speed *= MOUNT_LAUNCH_SPEED_MULT;
         } else if self.haste_buff_t > 0.0 {
@@ -358,12 +420,117 @@ impl MobaHero {
             max_power,
             might,
             armor,
+            magic_resist,
+            armor_shred_on_hit,
+            magic_shred_on_hit,
             speed,
             haste: haste.min(0.70),
             crit: crit.min(0.75),
             regen,
             area,
         }
+    }
+
+    /// Effective physical `Armor` after active `-Armor` (`armor_shred`) debuffs. Can go negative!
+    pub fn effective_armor(&self, team_level: u32) -> f32 {
+        let base = self.stats(team_level).armor;
+        let shred = if self.armor_shred_t > 0.0 {
+            self.armor_shred
+        } else {
+            0.0
+        };
+        base - shred
+    }
+
+    /// Effective `Magic Resist` after active `-Magic` (`magic_shred`) debuffs. Can go negative!
+    pub fn effective_magic_resist(&self, team_level: u32) -> f32 {
+        let base = self.stats(team_level).magic_resist;
+        let shred = if self.magic_shred_t > 0.0 {
+            self.magic_shred
+        } else {
+            0.0
+        };
+        base - shred
+    }
+
+    /// Converts net `Armor` or `Magic Resist` into a damage multiplier:
+    /// - Positive resistance mitigates damage smoothly (`100 / (100 + resist * 3.5)`).
+    /// - Negative resistance (from `-Armor` or `-Magic` shred) amplifies damage up to `1.60x`!
+    pub fn mitigation_multiplier(net_resist: f32) -> f32 {
+        if net_resist >= 0.0 {
+            100.0 / (100.0 + net_resist * 3.5)
+        } else {
+            (1.0 + (-net_resist) * 0.025).min(1.60)
+        }
+    }
+
+    /// Stacks `-Armor` (`armor_shred`) debuff on this hero.
+    pub fn apply_armor_shred(&mut self, amount: f32, duration: f32) {
+        if amount <= 0.0 || duration <= 0.0 {
+            return;
+        }
+        if self.armor_shred_t <= 0.0 {
+            self.armor_shred = 0.0;
+        }
+        self.armor_shred = (self.armor_shred + amount).min(MAX_SHRED_STACK);
+        self.armor_shred_t = self.armor_shred_t.max(duration);
+    }
+
+    /// Stacks `-Magic` (`magic_shred`) debuff on this hero.
+    pub fn apply_magic_shred(&mut self, amount: f32, duration: f32) {
+        if amount <= 0.0 || duration <= 0.0 {
+            return;
+        }
+        if self.magic_shred_t <= 0.0 {
+            self.magic_shred = 0.0;
+        }
+        self.magic_shred = (self.magic_shred + amount).min(MAX_SHRED_STACK);
+        self.magic_shred_t = self.magic_shred_t.max(duration);
+    }
+
+    /// Grants an `Anti-Magic` Spell Shield (`anti_magic_shell`) that absorbs `DamageSchool::Magic`
+    /// and purges active magic shred and silence!
+    pub fn grant_anti_magic_shell(&mut self, absorb: f32, duration: f32) {
+        self.anti_magic_shell = self.anti_magic_shell.max(absorb);
+        self.anti_magic_shell_t = self.anti_magic_shell_t.max(duration);
+        self.magic_shred = 0.0;
+        self.magic_shred_t = 0.0;
+        self.silence_t = 0.0;
+    }
+
+    /// Applies a `Webs` snare (Root through 15s DR + lingering Slow).
+    pub fn apply_web_snare(&mut self, root_secs: f32, slow_factor: f32, slow_secs: f32) {
+        let _ = self.apply_cc(CcCategory::Root, root_secs);
+        if self.unstoppable_t <= 0.0 {
+            self.slow_factor = slow_factor;
+            self.slow_t = self.slow_t.max(slow_secs);
+        }
+    }
+
+    /// Applies a `Poison` / `Affliction` damage-over-time and healing reduction debuff.
+    pub fn apply_poison_affliction(&mut self, dps: f32, duration: f32, heal_cut: f32) {
+        if self.unstoppable_t > 0.0 {
+            return;
+        }
+        self.poison_dps = self.poison_dps.max(dps);
+        self.poison_t = self.poison_t.max(duration);
+        self.heal_cut_pct = self.heal_cut_pct.max(heal_cut.clamp(0.0, 0.75));
+    }
+
+    /// Applies healing to this hero, reduced by active `Poison`/`Affliction` healing cut (`heal_cut_pct`).
+    pub fn receive_healing(&mut self, raw_heal: f32, team_level: u32) -> f32 {
+        if self.dead || raw_heal <= 0.0 {
+            return 0.0;
+        }
+        let mult = if self.poison_t > 0.0 {
+            (1.0 - self.heal_cut_pct).clamp(0.25, 1.0)
+        } else {
+            1.0
+        };
+        let actual = raw_heal * mult;
+        let max_hp = self.stats(team_level).max_hp;
+        self.hp = (self.hp + actual).min(max_hp);
+        actual
     }
 
     pub fn is_incapacitated(&self) -> bool {
@@ -396,8 +563,8 @@ impl MobaHero {
         effective
     }
 
-    /// Purges all active CC (Stun, Root, Fear, Silence, Slow) and grants `immunity_secs` of
-    /// Unstoppable debuff immunity (*Insignia of the Alliance/Horde* / Divine Shield).
+    /// Purges all active CC (Stun, Root, Fear, Silence, Slow) and Shred/Poison debuffs, and grants
+    /// `immunity_secs` of Unstoppable debuff immunity (*Insignia of the Alliance/Horde* / Divine Shield).
     pub fn purge_and_grant_unstoppable(&mut self, immunity_secs: f32) {
         self.stun_t = 0.0;
         self.root_t = 0.0;
@@ -405,6 +572,9 @@ impl MobaHero {
         self.silence_t = 0.0;
         self.slow_t = 0.0;
         self.slow_factor = 1.0;
+        self.poison_t = 0.0;
+        self.poison_dps = 0.0;
+        self.heal_cut_pct = 0.0;
         self.unstoppable_t = self.unstoppable_t.max(immunity_secs);
     }
 
@@ -496,6 +666,10 @@ impl MobaHero {
         self.dead = false;
         self.respawn_timer = 0.0;
         self.aegis_revive_t = None;
+        self.armor_shred = 0.0;
+        self.armor_shred_t = 0.0;
+        self.magic_shred = 0.0;
+        self.magic_shred_t = 0.0;
         self.pos = Self::fountain_pos_for(self.team, slot_in_team);
         self.has_left_fountain = false;
         self.mount_launch_t = MOUNT_LAUNCH_SECS;
@@ -503,7 +677,7 @@ impl MobaHero {
         self.deliver_stash(team_level);
         let st = self.stats(team_level);
         self.hp = st.max_hp;
-        self.power = match self.class_def().power_type {
+        self.power = match self.hero_def().power_type {
             PowerType::Mana | PowerType::Energy => st.max_power,
             PowerType::Rage => 25.0,
         };
@@ -536,7 +710,10 @@ impl MobaHero {
                 Stat::MaxHp => self.card_hp_bonus_pct += amount,
                 Stat::Speed => self.card_speed_bonus_pct += amount,
                 Stat::Haste => self.card_haste_bonus += amount,
-                Stat::Armor => self.card_armor_bonus += amount,
+                Stat::Armor => {
+                    self.card_armor_bonus += amount;
+                    self.card_magic_resist_bonus += amount * 0.8;
+                }
                 Stat::Crit => self.card_crit_bonus += amount,
                 Stat::Regen => self.card_regen_bonus += amount,
                 _ => self.card_might_bonus += amount,
@@ -593,6 +770,12 @@ impl MobaHero {
                 self.shield = self.shield.max(shield_amount);
                 self.shield_t = self.shield_t.max(duration);
             }
+            ActiveItemEffect::AntiMagicCarapace {
+                magic_absorb,
+                duration,
+            } => {
+                self.grant_anti_magic_shell(magic_absorb, duration);
+            }
             ActiveItemEffect::RocketBootsDash {
                 speed_mult,
                 duration,
@@ -614,17 +797,17 @@ impl MobaHero {
     }
 
     pub fn ability_def(&self, slot: MobaAbilitySlot) -> Option<&'static MobaAbilityDef> {
-        let c = self.class_def();
+        let h = self.hero_def();
         match slot {
-            MobaAbilitySlot::AutoPrimary => Some(&c.auto_primary),
-            MobaAbilitySlot::Q => Some(&c.q_skill),
-            MobaAbilitySlot::W => Some(&c.w_skill),
-            MobaAbilitySlot::E => Some(&c.e_skill),
+            MobaAbilitySlot::AutoPrimary => Some(&h.auto_primary),
+            MobaAbilitySlot::Q => Some(&h.q_skill),
+            MobaAbilitySlot::W => Some(&h.w_skill),
+            MobaAbilitySlot::E => Some(&h.e_skill),
             MobaAbilitySlot::UltimateR => {
                 let idx = self.chosen_ultimate.unwrap_or(0).min(1);
-                Some(&c.ultimates[idx])
+                Some(&h.ultimates[idx])
             }
-            MobaAbilitySlot::MobilityF => Some(&c.mobility),
+            MobaAbilitySlot::MobilityF => Some(&h.mobility),
         }
     }
 
@@ -650,20 +833,40 @@ impl MobaHero {
         }
     }
 
-    /// Applies incoming damage to this hero, respecting `unstoppable_t` / Divine Shield, Armor,
-    /// Shield barriers, and triggering **Aegis Soulstone** in-place revival if fatal!
+    /// Applies school-typed incoming damage (`Physical`, `Magic`, or `Pure`) to this hero,
+    /// respecting Dual-Mitigation (`effective_armor` vs `effective_magic_resist`), `-Armor`/`-Magic`
+    /// shred amplification, `Anti-Magic` Spell Shields, general barriers, and **Aegis Soulstone**!
     /// Returns `(actual_damage_taken, died_for_real)`.
-    pub fn take_damage(&mut self, raw_damage: f32, team_level: u32) -> (f32, bool) {
+    pub fn take_typed_damage(
+        &mut self,
+        raw_damage: f32,
+        school: DamageSchool,
+        team_level: u32,
+    ) -> (f32, bool) {
         if self.dead || self.aegis_revive_t.is_some() || raw_damage <= 0.0 {
             return (0.0, false);
         }
-        let st = self.stats(team_level);
-        let mut dmg = (raw_damage - st.armor).max(1.0);
-        if self.shield_t > 0.0 && self.shield > 0.0 {
+        let net_resist = match school {
+            DamageSchool::Physical => self.effective_armor(team_level),
+            DamageSchool::Magic => self.effective_magic_resist(team_level),
+            DamageSchool::Pure => 0.0,
+        };
+        let mut dmg = (raw_damage * Self::mitigation_multiplier(net_resist)).max(1.0);
+
+        // Anti-Magic Shell absorbs incoming Magic damage before general barriers or HP!
+        if school == DamageSchool::Magic && self.anti_magic_shell_t > 0.0 && self.anti_magic_shell > 0.0
+        {
+            let absorbed = dmg.min(self.anti_magic_shell);
+            self.anti_magic_shell -= absorbed;
+            dmg -= absorbed;
+        }
+
+        if self.shield_t > 0.0 && self.shield > 0.0 && dmg > 0.0 {
             let absorbed = dmg.min(self.shield);
             self.shield -= absorbed;
             dmg -= absorbed;
         }
+
         self.hp -= dmg;
         if self.hp <= 0.0 {
             self.hp = 0.0;
@@ -681,7 +884,13 @@ impl MobaHero {
         (dmg, false)
     }
 
-    /// Ticks timers, regeneration, Goblin Courier flight, Aegis Soulstone revival, and respawn.
+    /// Applies Physical incoming damage (used by lane minions, towers, and physical attacks).
+    pub fn take_damage(&mut self, raw_damage: f32, team_level: u32) -> (f32, bool) {
+        self.take_typed_damage(raw_damage, DamageSchool::Physical, team_level)
+    }
+
+    /// Ticks timers, shred/anti-magic/poison statuses, regeneration, Goblin Courier flight,
+    /// Aegis Soulstone revival, and respawn.
     pub fn tick(&mut self, dt: f32, team_level: u32, slot_in_team: usize) {
         self.dr_tracker.tick(dt);
         for cd in [
@@ -702,6 +911,10 @@ impl MobaHero {
         }
         for buff in [
             &mut self.shield_t,
+            &mut self.armor_shred_t,
+            &mut self.magic_shred_t,
+            &mut self.anti_magic_shell_t,
+            &mut self.poison_t,
             &mut self.stun_t,
             &mut self.root_t,
             &mut self.fear_t,
@@ -715,6 +928,20 @@ impl MobaHero {
             &mut self.mount_launch_t,
         ] {
             *buff = (*buff - dt).max(0.0);
+        }
+
+        if self.armor_shred_t <= 0.0 {
+            self.armor_shred = 0.0;
+        }
+        if self.magic_shred_t <= 0.0 {
+            self.magic_shred = 0.0;
+        }
+        if self.anti_magic_shell_t <= 0.0 {
+            self.anti_magic_shell = 0.0;
+        }
+        if self.poison_t <= 0.0 {
+            self.poison_dps = 0.0;
+            self.heal_cut_pct = 0.0;
         }
 
         // Check if hero has walked away from their Fountain (locks direct Fountain shopping!).
@@ -755,6 +982,11 @@ impl MobaHero {
             return;
         }
 
+        // Tick active Poison / Affliction DoT
+        if self.poison_t > 0.0 && self.poison_dps > 0.0 {
+            self.hp = (self.hp - self.poison_dps * dt).max(1.0);
+        }
+
         // Alive HP & Power regeneration (plus Fountain rapid regeneration when on spawn pad)
         let st = self.stats(team_level);
         let on_fountain =
@@ -766,7 +998,7 @@ impl MobaHero {
         };
         self.hp = (self.hp + hp_regen * dt).min(st.max_hp);
 
-        match self.class_def().power_type {
+        match self.hero_def().power_type {
             PowerType::Mana => {
                 let mana_regen = if on_fountain { 45.0 } else { 14.0 };
                 self.power = (self.power + mana_regen * dt).min(st.max_power);

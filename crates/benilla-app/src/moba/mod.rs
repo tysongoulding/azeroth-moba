@@ -18,6 +18,7 @@ pub mod bots;
 pub mod combat;
 pub mod data;
 pub mod draft;
+pub mod heroes;
 pub mod hud;
 pub mod lane;
 pub mod objectives;
@@ -31,7 +32,7 @@ use benilla_world::world_point::WorldPoint;
 use bevy::prelude::*;
 
 use bots::{
-    bot_choose_movement_target, bot_economy_and_items_step, recommended_item_order_for_role,
+    bot_choose_movement_target, bot_economy_and_items_step, recommended_item_order_for_hero,
 };
 use combat::{MobaHero, MAX_INVENTORY_SLOTS};
 use data::{MobaAbilitySlot, MobaEffect, MobaMapDef, Team, MOBA_MAPS};
@@ -43,7 +44,9 @@ use lane::{
     UPHILL_MISS_CHANCE,
 };
 use objectives::ObjectiveClock;
-use progression::{deal_legendary_boss_cards, deal_milestone_cards, TeamProgression};
+use progression::{
+    deal_legendary_boss_cards_for_hero, deal_milestone_cards_for_hero, TeamProgression,
+};
 use waves::{
     spawn_mercenary_push, spawn_raid_boss_avatar, spawn_wave_for_team, LaneMinion, MobaPickup,
     MobaPickupKind, AMBIENT_GOLD_RADIUS, AMBIENT_MINION_GOLD, LAST_HIT_GOLD,
@@ -138,37 +141,16 @@ impl MobaMatch {
         let player_team = draft.player_team;
         let mut player_hero_id = 1u32;
 
-        const ALLIANCE_NAMES: [&str; 5] = [
-            "Champion",
-            "Thaelin Ironbrow",
-            "Shandris Nightwind",
-            "Turalyon's Guard",
-            "Khadgar's Adept",
-        ];
-        const HORDE_NAMES: [&str; 5] = [
-            "Nazgrel's Vanguard",
-            "Drek'Thar's Chosen",
-            "Rokhan Shadowhunter",
-            "Apothecary Lydon",
-            "Cairne's Runetotem",
-        ];
-
         for (slot, &card) in draft.alliance_roster.iter().enumerate() {
             let id = (slot + 1) as u32;
             let is_player = !all_ai && player_team == Team::Alliance && slot == 0;
             if is_player {
                 player_hero_id = id;
             }
-            let mut h = MobaHero::new(
-                id,
-                ALLIANCE_NAMES[slot],
-                Team::Alliance,
-                card,
-                !is_player,
-                slot,
-            );
+            let hero_name = card.hero_def().name;
+            let mut h = MobaHero::new(id, hero_name, Team::Alliance, card, !is_player, slot);
             h.pending_card_offers
-                .push(deal_milestone_cards(h.class_def(), 1, rng));
+                .push(deal_milestone_cards_for_hero(h.hero_def(), 1, rng));
             heroes.push(h);
         }
 
@@ -178,9 +160,10 @@ impl MobaMatch {
             if is_player {
                 player_hero_id = id;
             }
-            let mut h = MobaHero::new(id, HORDE_NAMES[slot], Team::Horde, card, !is_player, slot);
+            let hero_name = card.hero_def().name;
+            let mut h = MobaHero::new(id, hero_name, Team::Horde, card, !is_player, slot);
             h.pending_card_offers
-                .push(deal_milestone_cards(h.class_def(), 1, rng));
+                .push(deal_milestone_cards_for_hero(h.hero_def(), 1, rng));
             heroes.push(h);
         }
 
@@ -270,7 +253,7 @@ impl MobaMatch {
             for &ms_lvl in &milestones {
                 for h in &mut self.heroes {
                     if h.team == team {
-                        let cards = deal_milestone_cards(h.class_def(), ms_lvl, rng);
+                        let cards = deal_milestone_cards_for_hero(h.hero_def(), ms_lvl, rng);
                         h.pending_card_offers.push(cards);
                     }
                 }
@@ -312,7 +295,7 @@ impl MobaMatch {
         if let Some(h) = self.player_hero_mut() {
             let total = h.inventory.len() + h.stash.len();
             if total < MAX_INVENTORY_SLOTS {
-                let order = recommended_item_order_for_role(h.role());
+                let order = recommended_item_order_for_hero(h);
                 for &key in order {
                     let has = h.inventory.iter().any(|i| i.key == key)
                         || h.stash.iter().any(|i| i.key == key);
@@ -412,6 +395,7 @@ impl MobaMatch {
             return false;
         }
 
+        let school = def.damage_school(hero.damage_profile());
         let st = hero.stats(team_lvl);
         let mutator = hero.slot_mutators[slot as usize];
         let range = (def.range + mutator.bonus_radius).max(5.5);
@@ -514,7 +498,7 @@ impl MobaMatch {
         let scaled_dmg = def.damage * st.might * (1.0 + mutator.bonus_dmg_pct) * crit_mult;
         let scaled_heal = def.heal * st.might * (1.0 + mutator.bonus_dmg_pct);
 
-        // Apply self/ally effects (Mobility, Shields, Heals, Bloodlust, Immunity)
+        // Apply self/ally effects (Mobility, Shields, Anti-Magic Shells, Heals, Bloodlust, Immunity)
         match def.effect {
             MobaEffect::Blink { distance } | MobaEffect::Dash { distance, .. } => {
                 if self.heroes[hero_idx].can_move() {
@@ -567,13 +551,30 @@ impl MobaMatch {
                     ally.shield_t = ally.shield_t.max(duration);
                 }
             }
+            MobaEffect::AntiMagicShell {
+                magic_absorb,
+                duration,
+                cleanse_magic,
+            } => {
+                let shell_val = magic_absorb * st.might;
+                if let Some(ally) = self
+                    .heroes
+                    .iter_mut()
+                    .filter(|a| !a.dead && a.team == team && a.pos.distance(hero_pos) <= 24.0)
+                    .min_by(|a, b| a.hp.total_cmp(&b.hp))
+                {
+                    if cleanse_magic {
+                        ally.purge_and_grant_unstoppable(0.5);
+                    }
+                    ally.grant_anti_magic_shell(shell_val, duration);
+                }
+            }
             MobaEffect::ImmunityAndHeal { duration, heal } => {
                 self.heroes[hero_idx].purge_and_grant_unstoppable(duration);
                 let bonus_heal = heal * st.might;
                 for ally in &mut self.heroes {
                     if !ally.dead && ally.team == team && ally.pos.distance(hero_pos) <= 20.0 {
-                        let max_hp = ally.stats(team_lvl).max_hp;
-                        ally.hp = (ally.hp + bonus_heal).min(max_hp);
+                        ally.receive_healing(bonus_heal, team_lvl);
                     }
                 }
             }
@@ -596,16 +597,16 @@ impl MobaMatch {
 
         // Apply direct healing to most injured ally in range
         if scaled_heal > 0.0 {
+            let mut actual_healed = 0.0;
             if let Some(ally) = self
                 .heroes
                 .iter_mut()
                 .filter(|a| !a.dead && a.team == team && a.pos.distance(hero_pos) <= 25.0)
                 .min_by(|a, b| a.hp.total_cmp(&b.hp))
             {
-                let max_hp = ally.stats(team_lvl).max_hp;
-                ally.hp = (ally.hp + scaled_heal).min(max_hp);
+                actual_healed = ally.receive_healing(scaled_heal, team_lvl);
             }
-            self.heroes[hero_idx].healing_done += scaled_heal;
+            self.heroes[hero_idx].healing_done += actual_healed;
         }
 
         if scaled_dmg <= 0.0 {
@@ -632,7 +633,14 @@ impl MobaMatch {
             if is_uphill_attack(hero_pos, eh_pos) && rng.f32() < UPHILL_MISS_CHANCE {
                 continue;
             }
-            // Apply CC / Slow effects
+            // Apply passive item/theme on-hit -Armor and -Magic shreds
+            if st.armor_shred_on_hit > 0.0 {
+                self.heroes[eh_idx].apply_armor_shred(st.armor_shred_on_hit, 4.5);
+            }
+            if st.magic_shred_on_hit > 0.0 {
+                self.heroes[eh_idx].apply_magic_shred(st.magic_shred_on_hit, 4.5);
+            }
+            // Apply CC / Slow / Theme Shred / Webs / PoisonAffliction effects
             match def.effect {
                 MobaEffect::Cc { category, duration } => {
                     self.heroes[eh_idx].apply_cc(category, duration);
@@ -643,9 +651,38 @@ impl MobaMatch {
                     self.heroes[eh_idx].slow_factor = factor;
                     self.heroes[eh_idx].slow_t = self.heroes[eh_idx].slow_t.max(duration);
                 }
+                MobaEffect::ArmorShred { amount, duration } => {
+                    self.heroes[eh_idx].apply_armor_shred(amount, duration);
+                }
+                MobaEffect::MagicShred { amount, duration } => {
+                    self.heroes[eh_idx].apply_magic_shred(amount, duration);
+                }
+                MobaEffect::DualShred {
+                    armor,
+                    magic,
+                    duration,
+                } => {
+                    self.heroes[eh_idx].apply_armor_shred(armor, duration);
+                    self.heroes[eh_idx].apply_magic_shred(magic, duration);
+                }
+                MobaEffect::WebSnare {
+                    root_secs,
+                    slow_factor,
+                    slow_secs,
+                } => {
+                    self.heroes[eh_idx].apply_web_snare(root_secs, slow_factor, slow_secs);
+                }
+                MobaEffect::PoisonAffliction {
+                    dps,
+                    duration,
+                    heal_cut,
+                } => {
+                    self.heroes[eh_idx].apply_poison_affliction(dps * st.might, duration, heal_cut);
+                }
                 _ => {}
             }
-            let (dealt, died) = self.heroes[eh_idx].take_damage(scaled_dmg, enemy_lvl);
+            let (dealt, died) =
+                self.heroes[eh_idx].take_typed_damage(scaled_dmg, school, enemy_lvl);
             total_dealt += dealt;
             if died {
                 hero_takedowns.push(eh_idx);
@@ -850,7 +887,7 @@ impl MobaMatch {
             if h.team == slaying_team {
                 h.gold += 250;
                 h.pending_card_offers
-                    .push(deal_legendary_boss_cards(h.class_def()));
+                    .push(deal_legendary_boss_cards_for_hero(h.hero_def()));
             }
         }
         let avatar = spawn_raid_boss_avatar(
@@ -1524,14 +1561,18 @@ fn sync_moba_3d_entities(
             }
         } else {
             let surv_class = &crate::survivors::data::CLASSES[h.card.class_def().survivors_idx];
-            let display = surv_class.looks.first().copied().unwrap_or(1300);
+            let h_def = h.hero_def();
+            let display = h_def
+                .display_override
+                .unwrap_or_else(|| surv_class.looks.first().copied().unwrap_or(1300));
+            let _ = h_def.weapons;
             let serial = run.guid();
             let e = crate::survivors::units::spawn_unit(
                 &mut commands,
                 &crate::survivors::units::UnitSpec {
                     serial,
                     display,
-                    scale: 1.05,
+                    scale: h_def.scale,
                     level: 60,
                     faction: h.team.faction_template(),
                     bytes0: u32::from(h.card.race)
@@ -1654,9 +1695,16 @@ fn sync_moba_3d_entities(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::moba::bots::recommended_item_order_for_role;
     use crate::moba::combat::{BuyOutcome, DrTracker};
-    use crate::moba::data::{CcCategory, HeroRole, MOBA_CLASSES, MOBA_MAPS, SHOP_ITEMS};
-    use crate::moba::draft::{auto_balance_team_roster, is_roster_role_balanced, TavernDraftState};
+    use crate::moba::data::{
+        heroes_by_theme, heroes_by_type, moba_hero_by_key, CcCategory, DamageSchool, HeroRole,
+        HeroType, ThemeTag, MOBA_CLASSES, MOBA_HEROES, MOBA_MAPS, SHOP_ITEMS,
+    };
+    use crate::moba::draft::{
+        auto_balance_team_roster, card_for_hero_index, is_roster_role_balanced,
+        is_roster_type_balanced, TavernDraftState,
+    };
     use crate::moba::lane::{
         brush_at, is_uphill_attack, is_visible_to_team, select_tower_target, PLATE_FALLOFF_TIME,
         PLATE_GOLD_REWARD,
@@ -1665,7 +1713,8 @@ mod tests {
         FIRST_BOSS_TIME, MERC_SPAWN_TIME, RUNE_INTERVAL, SECOND_BOSS_TIME, SUDDEN_DEATH_TIME,
     };
     use crate::moba::progression::{
-        comeback_xp_multiplier, deal_milestone_cards, MilestoneCardKind,
+        comeback_xp_multiplier, deal_legendary_boss_cards, deal_milestone_cards,
+        deal_milestone_cards_for_hero, MilestoneCardKind,
     };
 
     #[test]
@@ -1684,10 +1733,129 @@ mod tests {
             assert!(c.mobility.spell_id > 0);
         }
         assert_eq!(MOBA_MAPS.len(), 4);
-        assert!(SHOP_ITEMS.len() >= 18);
+        assert!(SHOP_ITEMS.len() >= 25);
         assert!(data::shop_item("insignia_of_the_alliance").is_some());
+        assert!(data::shop_item("spellbreaker_crest").is_some());
+        assert!(data::shop_item("sunder_cleaver").is_some());
+        assert!(data::shop_item("curse_of_elements_staff").is_some());
+        assert!(data::shop_item("annihilator_axe").is_some());
+        assert!(data::shop_item("nightfall_spellblade").is_some());
         assert!(data::shop_item("thunderfury").is_some());
         assert!(data::shop_item("sulfuras_hand_of_ragnaros").is_some());
+        let _ = (deal_legendary_boss_cards, recommended_item_order_for_role);
+    }
+
+    #[test]
+    fn all_36_theme_heroes_and_35_themes_and_three_combat_types_are_valid() {
+        assert_eq!(MOBA_HEROES.len(), 36);
+        assert_eq!(heroes_by_type(HeroType::Brawler).len(), 14);
+        assert_eq!(heroes_by_type(HeroType::Damage).len(), 12);
+        assert_eq!(heroes_by_type(HeroType::Support).len(), 10);
+
+        for (idx, h) in MOBA_HEROES.iter().enumerate() {
+            assert_eq!(h.idx, idx);
+            assert!(!h.key.is_empty());
+            assert!(!h.name.is_empty());
+            assert!(!h.title.is_empty());
+            assert!(h.themes.len() >= 2 && h.themes.len() <= 4);
+            assert!(h.base_hp >= 500.0);
+            assert!(h.base_armor > 0.0);
+            assert!(h.base_magic_resist > 0.0);
+            assert!(h.auto_primary.spell_id > 0);
+            assert!(h.q_skill.spell_id > 0);
+            assert!(h.w_skill.spell_id > 0);
+            assert!(h.e_skill.spell_id > 0);
+            assert!(h.ultimates[0].spell_id > 0);
+            assert!(h.ultimates[1].spell_id > 0);
+            assert_ne!(h.ultimates[0].key, h.ultimates[1].key);
+            assert!(h.mobility.spell_id > 0);
+            assert!(moba_hero_by_key(h.key).is_some());
+
+            // Verify Brawler is melee-range auto, Damage & Support are ranged auto
+            match h.hero_type {
+                HeroType::Brawler => assert!(h.auto_primary.range <= 9.0),
+                HeroType::Damage | HeroType::Support => assert!(h.auto_primary.range >= 20.0),
+            }
+        }
+
+        // Every single one of the 35 requested themes in ThemeTag::ALL is represented!
+        assert_eq!(ThemeTag::ALL.len(), 35);
+        for &theme in &ThemeTag::ALL {
+            let matching = heroes_by_theme(theme);
+            assert!(
+                !matching.is_empty(),
+                "ThemeTag::{theme:?} ({}) must be represented by at least 1 hero in MOBA_HEROES",
+                theme.label()
+            );
+        }
+    }
+
+    #[test]
+    fn dual_mitigation_armor_vs_magic_resist_and_shred_amplification() {
+        // Pick Brawler 0 (Thaelin: high Armor) and Support 26 (Alonsus: high Magic Resist)
+        let mut h = MobaHero::new(
+            1,
+            "Target",
+            Team::Alliance,
+            card_for_hero_index(0),
+            false,
+            0,
+        );
+        h.hp = 5000.0;
+        h.card_hp_flat = 4000.0;
+
+        // 1. Positive Armor & Magic Resist mitigate Physical & Magic damage compared to Pure damage
+        let (pure_dmg, _) = h.take_typed_damage(200.0, DamageSchool::Pure, 1);
+        assert!((pure_dmg - 200.0).abs() < 1e-3);
+
+        let (phys_base, _) = h.take_typed_damage(200.0, DamageSchool::Physical, 1);
+        let (mag_base, _) = h.take_typed_damage(200.0, DamageSchool::Magic, 1);
+        assert!(phys_base < pure_dmg);
+        assert!(mag_base < pure_dmg);
+
+        // 2. Apply -Armor shred (`armor_shred`) -> increases Physical damage taken, leaves Magic damage unchanged!
+        h.apply_armor_shred(35.0, 5.0);
+        assert!(h.effective_armor(1) < 0.0);
+        let (phys_shredded, _) = h.take_typed_damage(200.0, DamageSchool::Physical, 1);
+        let (mag_unshredded, _) = h.take_typed_damage(200.0, DamageSchool::Magic, 1);
+        assert!(
+            phys_shredded > pure_dmg,
+            "Negative effective armor should amplify physical damage above raw (got {phys_shredded})"
+        );
+        assert!((mag_unshredded - mag_base).abs() < 1e-3);
+
+        // 3. Apply -Magic shred (`magic_shred`) -> drives effective Magic Resist negative and amplifies Magic damage!
+        h.apply_magic_shred(35.0, 5.0);
+        assert!(h.effective_magic_resist(1) < 0.0);
+        let (mag_shredded, _) = h.take_typed_damage(200.0, DamageSchool::Magic, 1);
+        assert!(
+            mag_shredded > pure_dmg,
+            "Negative effective magic resist should amplify magic damage above raw (got {mag_shredded})"
+        );
+
+        // 4. Grant Anti-Magic Shell -> purges active magic_shred and absorbs Magic damage while Physical bypasses it!
+        h.grant_anti_magic_shell(150.0, 4.0);
+        assert_eq!(h.magic_shred, 0.0);
+        let hp_before_magic = h.hp;
+        let _ = h.take_typed_damage(100.0, DamageSchool::Magic, 1);
+        assert!(
+            (h.hp - hp_before_magic).abs() < 1e-3,
+            "Anti-Magic Shell should absorb 100% of Magic damage while shell remains"
+        );
+        assert!(h.anti_magic_shell < 150.0);
+
+        let hp_before_phys = h.hp;
+        let _ = h.take_typed_damage(100.0, DamageSchool::Physical, 1);
+        assert!(
+            h.hp < hp_before_phys,
+            "Physical damage should bypass Anti-Magic Shell and reduce HP"
+        );
+
+        // 5. Poison/Affliction DoT + Healing Cut (`heal_cut_pct`)
+        h.hp = 500.0;
+        h.apply_poison_affliction(40.0, 4.0, 0.40);
+        let healed = h.receive_healing(100.0, 1);
+        assert!((healed - 60.0).abs() < 1e-3);
     }
 
     #[test]
@@ -1698,6 +1866,8 @@ mod tests {
         assert!(!draft.bench.is_empty());
         assert!(is_roster_role_balanced(&draft.alliance_roster));
         assert!(is_roster_role_balanced(&draft.horde_roster));
+        assert!(is_roster_type_balanced(&draft.alliance_roster));
+        assert!(is_roster_type_balanced(&draft.horde_roster));
 
         let bench_before = draft.bench.len();
         assert!(draft.reroll_hand(&mut rng));
@@ -1712,7 +1882,13 @@ mod tests {
         assert_eq!(draft.active_player_card(), bench0);
         assert!(is_roster_role_balanced(&draft.alliance_roster));
 
-        // Verify role balancing across every possible lead role
+        // Verify cycling through all 36 heroes in AllPick / CycleHero
+        let start_idx = draft.active_player_card().hero_idx;
+        let next_card = draft.cycle_hero(&mut rng);
+        assert_eq!(next_card.hero_idx, (start_idx + 1) % MOBA_HEROES.len());
+        assert!(is_roster_role_balanced(&draft.alliance_roster));
+
+        // Verify role & type balancing across every possible lead role
         for role in [
             HeroRole::Tank,
             HeroRole::Healer,
@@ -1722,6 +1898,7 @@ mod tests {
             let lead = draft::random_card_for_role(role, Team::Alliance, &mut rng);
             let roster = auto_balance_team_roster(lead, &mut rng, Team::Alliance);
             assert!(is_roster_role_balanced(&roster));
+            assert!(is_roster_type_balanced(&roster));
         }
     }
 
@@ -1834,9 +2011,9 @@ mod tests {
         moba.add_team_xp(Team::Alliance, 6000.0, &mut rng);
         assert!(moba.alliance_prog.level >= 10);
 
-        // Verify Level 10 cards guarantee slots 0 and 1 are the 2 Heroic Ultimates!
-        for class in &MOBA_CLASSES {
-            let cards = deal_milestone_cards(class, 10, &mut rng);
+        // Verify Level 10 cards guarantee slots 0 and 1 are the 2 Heroic Ultimates for all 36 heroes!
+        for hero in &MOBA_HEROES {
+            let cards = deal_milestone_cards_for_hero(hero, 10, &mut rng);
             assert_eq!(
                 cards[0].kind,
                 MilestoneCardKind::HeroicUltimate { ult_index: 0 }
@@ -1848,6 +2025,7 @@ mod tests {
             assert_eq!(cards[0].rarity, progression::CardRarity::Legendary);
             assert_eq!(cards[1].rarity, progression::CardRarity::Legendary);
         }
+        let _ = deal_milestone_cards;
     }
 
     #[test]

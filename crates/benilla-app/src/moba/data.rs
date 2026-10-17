@@ -55,6 +55,215 @@ impl Team {
     }
 }
 
+/// Core 3-Type Combat Taxonomy (`Brawler`, `Damage`, `Support`):
+/// - `Brawler`: Melee (Physical / Magic / Hybrid) frontliners, vanguards, guardians, berserkers, and ninja strikers.
+/// - `Damage`: Ranged (Physical / Magic / Hybrid) marksmen, elementalists, demonologists, and affliction casters.
+/// - `Support`: Ranged (Magic / Hybrid) healers, shield wardens, controllers, and `-Armor` / `-Magic` curse debuffers.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum HeroType {
+    #[default]
+    Brawler,
+    Damage,
+    Support,
+}
+
+impl HeroType {
+    pub const ALL: [Self; 3] = [Self::Brawler, Self::Damage, Self::Support];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Brawler => "Brawler (Melee)",
+            Self::Damage => "Damage (Ranged)",
+            Self::Support => "Support (Ranged)",
+        }
+    }
+
+    pub const fn short_label(self) -> &'static str {
+        match self {
+            Self::Brawler => "Brawler",
+            Self::Damage => "Damage",
+            Self::Support => "Support",
+        }
+    }
+
+    pub const fn is_melee(self) -> bool {
+        matches!(self, Self::Brawler)
+    }
+
+    pub const fn is_ranged(self) -> bool {
+        matches!(self, Self::Damage | Self::Support)
+    }
+}
+
+/// Damage mitigation school for Dual-Mitigation (`Armor` vs `Magic Resist`).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum DamageSchool {
+    #[default]
+    Physical,
+    Magic,
+    Pure,
+}
+
+impl DamageSchool {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Physical => "Physical",
+            Self::Magic => "Magic",
+            Self::Pure => "Pure",
+        }
+    }
+}
+
+/// Hero's overall offensive damage profile across their kit.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum DamageProfile {
+    #[default]
+    Physical,
+    Magic,
+    Hybrid,
+}
+
+impl DamageProfile {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Physical => "Physical",
+            Self::Magic => "Magic",
+            Self::Hybrid => "Physical/Magic",
+        }
+    }
+
+    pub const fn primary_school(self) -> DamageSchool {
+        match self {
+            Self::Physical => DamageSchool::Physical,
+            Self::Magic | Self::Hybrid => DamageSchool::Magic,
+        }
+    }
+}
+
+/// Elemental, Weapon, Visceral, and Tactical Theme Tags per Hero.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ThemeTag {
+    // Elements & Cosmic Forces
+    Fire,
+    Lava,
+    Metal,
+    Water,
+    Ice,
+    Air,
+    Earth,
+    Lightning,
+    Shockwave,
+    Arcane,
+    Shadow,
+    Nature,
+    Holy,
+    Light,
+    // Visceral / Dark / Status Themes
+    Blood,
+    Flesh,
+    Undead,
+    Bones,
+    Poison,
+    Webs,
+    Demonic,
+    Affliction,
+    // Weapons & Martial Styles
+    Shield,
+    Axe,
+    Swords,
+    Bow,
+    Gun,
+    Strike,
+    Ninja,
+    // Tactical & Mitigation Archetypes
+    Guardian,
+    Vanguard,
+    Berserker,
+    AntiMagic,
+    MinusArmor,
+    MinusMagic,
+}
+
+impl ThemeTag {
+    pub const ALL: [Self; 35] = [
+        Self::Fire,
+        Self::Lava,
+        Self::Metal,
+        Self::Water,
+        Self::Ice,
+        Self::Blood,
+        Self::Flesh,
+        Self::Undead,
+        Self::Bones,
+        Self::Air,
+        Self::Earth,
+        Self::Arcane,
+        Self::Shadow,
+        Self::Nature,
+        Self::Holy,
+        Self::Light,
+        Self::Shield,
+        Self::Axe,
+        Self::Swords,
+        Self::Bow,
+        Self::Gun,
+        Self::Poison,
+        Self::Webs,
+        Self::Demonic,
+        Self::Affliction,
+        Self::Guardian,
+        Self::Vanguard,
+        Self::Berserker,
+        Self::AntiMagic,
+        Self::MinusArmor,
+        Self::MinusMagic,
+        Self::Shockwave,
+        Self::Lightning,
+        Self::Strike,
+        Self::Ninja,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Fire => "Fire",
+            Self::Lava => "Lava",
+            Self::Metal => "Metal",
+            Self::Water => "Water",
+            Self::Ice => "Ice",
+            Self::Blood => "Blood",
+            Self::Flesh => "Flesh",
+            Self::Undead => "Undead",
+            Self::Bones => "Bones",
+            Self::Air => "Air",
+            Self::Earth => "Earth",
+            Self::Arcane => "Arcane",
+            Self::Shadow => "Shadow",
+            Self::Nature => "Nature",
+            Self::Holy => "Holy",
+            Self::Light => "Light",
+            Self::Shield => "Shield",
+            Self::Axe => "Axe",
+            Self::Swords => "Swords",
+            Self::Bow => "Bow",
+            Self::Gun => "Gun",
+            Self::Poison => "Poison",
+            Self::Webs => "Webs",
+            Self::Demonic => "Demonic",
+            Self::Affliction => "Affliction",
+            Self::Guardian => "Guardian",
+            Self::Vanguard => "Vanguard",
+            Self::Berserker => "Berserker",
+            Self::AntiMagic => "Anti-Magic",
+            Self::MinusArmor => "-Armor",
+            Self::MinusMagic => "-Magic",
+            Self::Shockwave => "Shockwave",
+            Self::Lightning => "Lightning",
+            Self::Strike => "Strike",
+            Self::Ninja => "Ninja",
+        }
+    }
+}
+
 /// Core 5-man combat role used for Tavern Bench Shuffle role balancing and AI bot behavior.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum HeroRole {
@@ -75,6 +284,14 @@ impl HeroRole {
             Self::Healer => "Healer",
             Self::MeleeDps => "Melee DPS",
             Self::RangedDps => "Ranged DPS",
+        }
+    }
+
+    pub const fn hero_type(self) -> HeroType {
+        match self {
+            Self::Tank | Self::MeleeDps => HeroType::Brawler,
+            Self::RangedDps => HeroType::Damage,
+            Self::Healer => HeroType::Support,
         }
     }
 }
@@ -111,7 +328,7 @@ impl CcCategory {
     }
 }
 
-/// Secondary combat or crowd-control effect attached to an ability.
+/// Secondary combat, crowd-control, or theme status effect attached to an ability.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum MobaEffect {
     None,
@@ -164,6 +381,40 @@ pub enum MobaEffect {
         speed_mult: f32,
         duration: f32,
     },
+    /// `-Armor` shred debuff: reduces target Armor by `amount` for `duration` seconds (stacks, can go negative!).
+    ArmorShred {
+        amount: f32,
+        duration: f32,
+    },
+    /// `-Magic` shred debuff: reduces target Magic Resist by `amount` for `duration` seconds (stacks, can go negative!).
+    MagicShred {
+        amount: f32,
+        duration: f32,
+    },
+    /// Dual `-Armor` and `-Magic` shred debuff.
+    DualShred {
+        armor: f32,
+        magic: f32,
+        duration: f32,
+    },
+    /// `Anti-Magic` Shell / Spellbreaker ward: absorbs up to `magic_absorb` Magic damage and optionally cleanses CC.
+    AntiMagicShell {
+        magic_absorb: f32,
+        duration: f32,
+        cleanse_magic: bool,
+    },
+    /// `Webs` cocoon/net: roots for `root_secs` then slows by `slow_factor` for `slow_secs`.
+    WebSnare {
+        root_secs: f32,
+        slow_factor: f32,
+        slow_secs: f32,
+    },
+    /// `Poison` / `Affliction` / `Blood` DoT + mortal wound healing reduction (`heal_cut` in `0.0..=0.60`).
+    PoisonAffliction {
+        dps: f32,
+        duration: f32,
+        heal_cut: f32,
+    },
 }
 
 /// Which hotbar slot an ability occupies.
@@ -190,7 +441,7 @@ impl MobaAbilitySlot {
     }
 }
 
-/// One ability in a class's hybrid action-MOBA kit.
+/// One ability in a hero's hybrid action-MOBA kit.
 #[derive(Clone, Copy, Debug)]
 pub struct MobaAbilityDef {
     pub key: &'static str,
@@ -207,6 +458,31 @@ pub struct MobaAbilityDef {
     pub radius: f32,
     pub effect: MobaEffect,
     pub desc: &'static str,
+}
+
+impl MobaAbilityDef {
+    /// Resolves the `DamageSchool` (`Physical`, `Magic`, or `Pure`) for this ability given the hero's `DamageProfile`.
+    pub const fn damage_school(&self, profile: DamageProfile) -> DamageSchool {
+        match self.effect {
+            MobaEffect::ArmorShred { .. } | MobaEffect::Dash { .. } => DamageSchool::Physical,
+            MobaEffect::MagicShred { .. }
+            | MobaEffect::DualShred { .. }
+            | MobaEffect::AntiMagicShell { .. }
+            | MobaEffect::LifeDrain { .. }
+            | MobaEffect::Blink { .. } => DamageSchool::Magic,
+            _ => match profile {
+                DamageProfile::Physical => DamageSchool::Physical,
+                DamageProfile::Magic => DamageSchool::Magic,
+                DamageProfile::Hybrid => {
+                    if matches!(self.slot, MobaAbilitySlot::AutoPrimary | MobaAbilitySlot::Q) {
+                        DamageSchool::Physical
+                    } else {
+                        DamageSchool::Magic
+                    }
+                }
+            },
+        }
+    }
 }
 
 /// Complete class kit definition for all 9 Vanilla WoW 1.12 classes.
@@ -1513,6 +1789,11 @@ pub enum ActiveItemEffect {
         shield_amount: f32,
         duration: f32,
     },
+    /// *Spellbreaker Crest*: Anti-Magic carapace absorbing Magic damage and purging Silence/Root.
+    AntiMagicCarapace {
+        magic_absorb: f32,
+        duration: f32,
+    },
     /// *Major Healthstone*: instant combat self-heal.
     HealthstoneHeal {
         heal_amount: f32,
@@ -1556,9 +1837,44 @@ impl ShopItemDef {
             Stat::Armor
         }
     }
+
+    /// Passive Magic Resist granted by this item.
+    pub fn bonus_magic_resist(&self) -> f32 {
+        match self.key {
+            "spellbreaker_crest" => 24.0,
+            "bulwark_of_azzinoth_relic" => 18.0,
+            "styleens_impeding_scarab" => 14.0,
+            "quel_serrar" => 10.0,
+            "aegis_of_the_blood_god" | "insignia_of_the_alliance" => 8.0,
+            "flask_of_supreme_power" | "staff_of_dominance" | "curse_of_elements_staff" => 6.0,
+            _ => 0.0,
+        }
+    }
+
+    /// Passive `-Armor` shred applied on hit by this item.
+    pub fn armor_shred_on_hit(&self) -> f32 {
+        match self.key {
+            "annihilator_axe" => 16.0,
+            "sunder_cleaver" => 10.0,
+            "arcanite_reaper" | "sulfuras_hand_of_ragnaros" => 8.0,
+            "thunderfury" => 6.0,
+            _ => 0.0,
+        }
+    }
+
+    /// Passive `-Magic` resist shred applied on hit by this item.
+    pub fn magic_shred_on_hit(&self) -> f32 {
+        match self.key {
+            "nightfall_spellblade" => 18.0,
+            "curse_of_elements_staff" => 12.0,
+            "neltharions_tear" | "sulfuras_hand_of_ragnaros" => 8.0,
+            "thunderfury" => 6.0,
+            _ => 0.0,
+        }
+    }
 }
 
-pub static SHOP_ITEMS: [ShopItemDef; 20] = [
+pub static SHOP_ITEMS: [ShopItemDef; 25] = [
     // --- Starter (3) ---
     ShopItemDef {
         key: "alterac_manna_biscuit",
@@ -1756,7 +2072,7 @@ pub static SHOP_ITEMS: [ShopItemDef; 20] = [
         active_cd: 45.0,
         desc: "Active: Increases all damage and healing by +30% for 8s (45s CD).",
     },
-    // --- Defense (4) ---
+    // --- Defense & Anti-Magic (5) ---
     ShopItemDef {
         key: "aegis_of_the_blood_god",
         name: "Aegis of the Blood God",
@@ -1779,6 +2095,27 @@ pub static SHOP_ITEMS: [ShopItemDef; 20] = [
         desc: "+190 HP, +10 Armor. Active: Grants a 220 HP barrier for 6s (50s CD).",
     },
     ShopItemDef {
+        key: "spellbreaker_crest",
+        name: "Spellbreaker's Anti-Magic Crest",
+        spell_id: 1953,
+        category: ShopCategory::Defense,
+        cost: 1550,
+        bonus_hp: 180.0,
+        bonus_might: 0.08,
+        bonus_armor: 8.0,
+        bonus_speed_pct: 0.0,
+        bonus_haste: 0.08,
+        bonus_crit: 0.0,
+        bonus_regen: 4.5,
+        bonus_area: 0.0,
+        active: ActiveItemEffect::AntiMagicCarapace {
+            magic_absorb: 280.0,
+            duration: 5.0,
+        },
+        active_cd: 42.0,
+        desc: "+24 Magic Resist, +180 HP. Active: Grants 280 Anti-Magic Shell for 5s and purges Silence.",
+    },
+    ShopItemDef {
         key: "quel_serrar",
         name: "Quel'Serrar, High Blade",
         spell_id: 1126,
@@ -1794,7 +2131,7 @@ pub static SHOP_ITEMS: [ShopItemDef; 20] = [
         bonus_area: 0.0,
         active: ActiveItemEffect::None,
         active_cd: 0.0,
-        desc: "+230 HP, +13 Armor, +10% Might, +5.5 HP/s Regen.",
+        desc: "+230 HP, +13 Armor, +10 Magic Resist, +10% Might.",
     },
     ShopItemDef {
         key: "styleens_impeding_scarab",
@@ -1812,7 +2149,7 @@ pub static SHOP_ITEMS: [ShopItemDef; 20] = [
         bonus_area: 0.0,
         active: ActiveItemEffect::None,
         active_cd: 0.0,
-        desc: "+280 HP, +15 Armor, +6 HP/s Regen.",
+        desc: "+280 HP, +15 Armor, +14 Magic Resist, +6 HP/s Regen.",
     },
     ShopItemDef {
         key: "bulwark_of_azzinoth_relic",
@@ -1830,9 +2167,45 @@ pub static SHOP_ITEMS: [ShopItemDef; 20] = [
         bonus_area: 0.0,
         active: ActiveItemEffect::None,
         active_cd: 0.0,
-        desc: "+340 HP, +18 Armor, +7.5 HP/s Regen.",
+        desc: "+340 HP, +18 Armor, +18 Magic Resist, +7.5 HP/s Regen.",
     },
-    // --- Offense & Legendaries (6) ---
+    // --- Offense, -Armor, -Magic & Legendaries (10) ---
+    ShopItemDef {
+        key: "sunder_cleaver",
+        name: "Blackrock Sunder Cleaver",
+        spell_id: 7386,
+        category: ShopCategory::Offense,
+        cost: 1450,
+        bonus_hp: 100.0,
+        bonus_might: 0.16,
+        bonus_armor: 5.0,
+        bonus_speed_pct: 0.0,
+        bonus_haste: 0.06,
+        bonus_crit: 0.05,
+        bonus_regen: 0.0,
+        bonus_area: 0.0,
+        active: ActiveItemEffect::None,
+        active_cd: 0.0,
+        desc: "-Armor Synergy: Attacks shred -10 Armor on hit. +16% Might, +100 HP.",
+    },
+    ShopItemDef {
+        key: "curse_of_elements_staff",
+        name: "Rod of the Elements (-Magic)",
+        spell_id: 1490,
+        category: ShopCategory::Offense,
+        cost: 1500,
+        bonus_hp: 90.0,
+        bonus_might: 0.17,
+        bonus_armor: 2.0,
+        bonus_speed_pct: 0.0,
+        bonus_haste: 0.10,
+        bonus_crit: 0.04,
+        bonus_regen: 2.5,
+        bonus_area: 0.08,
+        active: ActiveItemEffect::None,
+        active_cd: 0.0,
+        desc: "-Magic Synergy: Spells shred -12 Magic Resist on hit. +17% Might, +10% Haste.",
+    },
     ShopItemDef {
         key: "arcanite_reaper",
         name: "Arcanite Reaper",
@@ -1849,7 +2222,7 @@ pub static SHOP_ITEMS: [ShopItemDef; 20] = [
         bonus_area: 0.0,
         active: ActiveItemEffect::None,
         active_cd: 0.0,
-        desc: "+20% Might, +8% Crit, +90 HP.",
+        desc: "+20% Might, +8% Crit, -8 Armor shred on hit, +90 HP.",
     },
     ShopItemDef {
         key: "staff_of_dominance",
@@ -1870,6 +2243,42 @@ pub static SHOP_ITEMS: [ShopItemDef; 20] = [
         desc: "+18% Might, +12% Haste, +10% Area, +80 HP.",
     },
     ShopItemDef {
+        key: "annihilator_axe",
+        name: "Annihilator, Armor-Shatter Axe",
+        spell_id: 1160,
+        category: ShopCategory::Offense,
+        cost: 1850,
+        bonus_hp: 140.0,
+        bonus_might: 0.22,
+        bonus_armor: 6.0,
+        bonus_speed_pct: 0.05,
+        bonus_haste: 0.08,
+        bonus_crit: 0.08,
+        bonus_regen: 2.0,
+        bonus_area: 0.0,
+        active: ActiveItemEffect::None,
+        active_cd: 0.0,
+        desc: "Heavy -Armor: Shreds -16 Armor on hit (can drive Armor negative!). +22% Might.",
+    },
+    ShopItemDef {
+        key: "nightfall_spellblade",
+        name: "Nightfall, Hex-Shatter Blade",
+        spell_id: 15286,
+        category: ShopCategory::Offense,
+        cost: 1850,
+        bonus_hp: 130.0,
+        bonus_might: 0.22,
+        bonus_armor: 4.0,
+        bonus_speed_pct: 0.05,
+        bonus_haste: 0.10,
+        bonus_crit: 0.06,
+        bonus_regen: 2.0,
+        bonus_area: 0.06,
+        active: ActiveItemEffect::None,
+        active_cd: 0.0,
+        desc: "Heavy -Magic: Shreds -18 Magic Resist on hit (amplifies Magic damage!). +22% Might.",
+    },
+    ShopItemDef {
         key: "neltharions_tear",
         name: "Neltharion's Tear",
         spell_id: 11366,
@@ -1885,7 +2294,7 @@ pub static SHOP_ITEMS: [ShopItemDef; 20] = [
         bonus_area: 0.08,
         active: ActiveItemEffect::None,
         active_cd: 0.0,
-        desc: "+24% Might, +10% Crit, +8% Haste, +110 HP.",
+        desc: "+24% Might, +10% Crit, -8 Magic Resist shred on hit, +110 HP.",
     },
     ShopItemDef {
         key: "flask_of_supreme_power",
@@ -1921,7 +2330,7 @@ pub static SHOP_ITEMS: [ShopItemDef; 20] = [
         bonus_area: 0.12,
         active: ActiveItemEffect::None,
         active_cd: 0.0,
-        desc: "Legendary: +32% Might, +18% Haste, +10% Speed, +200 HP.",
+        desc: "Legendary: +32% Might, +18% Haste, -6 Armor & -6 Magic Resist on hit.",
     },
     ShopItemDef {
         key: "sulfuras_hand_of_ragnaros",
@@ -1939,10 +2348,12 @@ pub static SHOP_ITEMS: [ShopItemDef; 20] = [
         bonus_area: 0.15,
         active: ActiveItemEffect::None,
         active_cd: 0.0,
-        desc: "Legendary: +38% Might, +14% Crit, +240 HP, +15% Area.",
+        desc: "Legendary: +38% Might, +14% Crit, -8 Armor & -8 Magic Resist on hit.",
     },
 ];
 
 pub fn shop_item(key: &str) -> Option<&'static ShopItemDef> {
     SHOP_ITEMS.iter().find(|i| i.key == key)
 }
+
+pub use super::heroes::*;

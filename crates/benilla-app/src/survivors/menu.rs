@@ -46,6 +46,7 @@ pub(super) enum MenuAction {
     Randomize,
     ToggleGameMode,
     ToggleDraftMode,
+    CycleHero,
     RerollBench,
     SwapBench(usize),
     Enter,
@@ -206,7 +207,7 @@ pub(super) fn build_menu(
                     f,
                     MenuAction::ToggleGameMode,
                     "Switch Mode",
-                    136.0,
+                    124.0,
                     28.0,
                     GlueBtnKind::Small,
                     1.0,
@@ -217,7 +218,18 @@ pub(super) fn build_menu(
                     f,
                     MenuAction::ToggleDraftMode,
                     "Draft Mode",
-                    126.0,
+                    118.0,
+                    28.0,
+                    GlueBtnKind::Small,
+                    1.0,
+                );
+                glue_button(
+                    row,
+                    &art,
+                    f,
+                    MenuAction::CycleHero,
+                    "Cycle Hero (36)",
+                    132.0,
                     28.0,
                     GlueBtnKind::Small,
                     1.0,
@@ -228,7 +240,7 @@ pub(super) fn build_menu(
                     f,
                     MenuAction::RerollBench,
                     "Reroll Hand",
-                    126.0,
+                    118.0,
                     28.0,
                     GlueBtnKind::Small,
                     1.0,
@@ -239,7 +251,7 @@ pub(super) fn build_menu(
                     f,
                     MenuAction::SwapBench(0),
                     "Swap Bench",
-                    126.0,
+                    118.0,
                     28.0,
                     GlueBtnKind::Small,
                     1.0,
@@ -678,6 +690,20 @@ pub(super) fn menu_clicks(
             };
             selection.version += 1;
         }
+        MenuAction::CycleHero => {
+            let card = draft.cycle_hero(&mut rng);
+            let c = card.class_idx.min(all.len().saturating_sub(1));
+            let r = card.race;
+            let s = card.sex;
+            if let Some(l) = find(&all[c], Some(r), Some(s))
+                .or_else(|| find(&all[c], Some(r), None))
+                .or_else(|| find(&all[c], None, None))
+            {
+                set(&mut selection, &all, c, l);
+            } else {
+                selection.version += 1;
+            }
+        }
         MenuAction::RerollBench => {
             if draft.reroll_hand(&mut rng) {
                 let card = draft.active_player_card();
@@ -723,14 +749,28 @@ pub(super) fn menu_clicks(
             }
         }
         MenuAction::Randomize => {
-            let picks: Vec<(usize, usize)> = all
-                .iter()
-                .enumerate()
-                .flat_map(|(c, looks)| (0..looks.len()).map(move |l| (c, l)))
-                .collect();
-            if !picks.is_empty() {
-                let (c, l) = picks[rng.index(picks.len())];
-                set(&mut selection, &all, c, l);
+            if *mode == crate::moba::GameMode::Moba5v5 {
+                let random_hero = rng.index(crate::moba::data::MOBA_HEROES.len());
+                let card = draft.set_hero_index(random_hero, &mut rng);
+                let c = card.class_idx.min(all.len().saturating_sub(1));
+                if let Some(l) = find(&all[c], Some(card.race), Some(card.sex))
+                    .or_else(|| find(&all[c], Some(card.race), None))
+                    .or_else(|| find(&all[c], None, None))
+                {
+                    set(&mut selection, &all, c, l);
+                } else {
+                    selection.version += 1;
+                }
+            } else {
+                let picks: Vec<(usize, usize)> = all
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(c, looks)| (0..looks.len()).map(move |l| (c, l)))
+                    .collect();
+                if !picks.is_empty() {
+                    let (c, l) = picks[rng.index(picks.len())];
+                    set(&mut selection, &all, c, l);
+                }
             }
         }
         // The class keeps the race and gender where it can.
@@ -742,6 +782,11 @@ pub(super) fn menu_clicks(
                 .or_else(|| find(looks, None, None));
             if let Some(l) = l {
                 set(&mut selection, &all, c, l);
+                if *mode == crate::moba::GameMode::Moba5v5 {
+                    let picked_race = looks[l].1;
+                    let picked_sex = looks[l].2;
+                    draft.set_all_pick_class(c, picked_race, picked_sex, &mut rng);
+                }
             }
         }
         // The race keeps the class where it can, else takes the first class it has.
@@ -751,6 +796,10 @@ pub(super) fn menu_clicks(
                 let l = find(&all[c], Some(r), Some(sex)).or_else(|| find(&all[c], Some(r), None));
                 if let Some(l) = l {
                     set(&mut selection, &all, c, l);
+                    if *mode == crate::moba::GameMode::Moba5v5 {
+                        let picked_sex = all[c][l].2;
+                        draft.set_all_pick_class(c, r, picked_sex, &mut rng);
+                    }
                     break;
                 }
             }
@@ -816,6 +865,7 @@ pub(super) fn refresh_menu_ui(
             MenuAction::Map(i) => selection.map == i,
             MenuAction::ToggleGameMode
             | MenuAction::ToggleDraftMode
+            | MenuAction::CycleHero
             | MenuAction::RerollBench
             | MenuAction::SwapBench(_)
             | MenuAction::Randomize
@@ -829,7 +879,7 @@ pub(super) fn refresh_menu_ui(
         if let Some(mut disabled) = disabled {
             let off = match *action {
                 MenuAction::Enter => cur.is_none(),
-                MenuAction::ToggleDraftMode => !is_moba,
+                MenuAction::ToggleDraftMode | MenuAction::CycleHero => !is_moba,
                 MenuAction::RerollBench => {
                     !is_moba
                         || draft.mode != crate::moba::draft::DraftMode::TavernBenchShuffle
@@ -894,9 +944,13 @@ pub(super) fn refresh_menu_ui(
 
     let class = selection.class_def();
     if let Ok((mut t, mut color)) = texts.p0().single_mut() {
-        let want = match (class, cur) {
-            (Some(c), Some((r, _))) => format!("{} {}", race_name(r), c.name),
-            _ => String::new(),
+        let want = if is_moba {
+            draft.active_player_card().display_title()
+        } else {
+            match (class, cur) {
+                (Some(c), Some((r, _))) => format!("{} {}", race_name(r), c.name),
+                _ => String::new(),
+            }
         };
         if t.0 != want {
             t.0 = want;
@@ -914,7 +968,7 @@ pub(super) fn refresh_menu_ui(
                 crate::moba::draft::DraftMode::TavernBenchShuffle => "Tavern Bench Shuffle",
                 crate::moba::draft::DraftMode::AllPick => "All Pick",
             };
-            format!("Mode: 5v5 Mid Brawl ({d})")
+            format!("Mode: 5v5 Mid Brawl ({d} — 36 Theme Heroes)")
         } else {
             "Mode: Warcraft Survivors Solo".to_string()
         };
@@ -925,18 +979,25 @@ pub(super) fn refresh_menu_ui(
 
     if let Ok(mut t) = texts.p2().single_mut() {
         let want = if is_moba {
+            let active_h = draft.active_player_card().hero_def();
             let bench_str = if draft.bench.is_empty() {
                 "Empty".to_string()
             } else {
                 draft
                     .bench
                     .iter()
-                    .map(|b| format!("{} {}", race_name(b.race), b.class_def().name))
+                    .map(|b| {
+                        let bh = b.hero_def();
+                        format!("{} ({})", bh.name, bh.hero_type.short_label())
+                    })
                     .collect::<Vec<_>>()
                     .join(", ")
             };
             format!(
-                "Rerolls left: {}  |  Tavern Bench: {bench_str}",
+                "Type: {} ({})  |  Themes: [{}]  |  Rerolls: {}  |  Bench: {bench_str}",
+                active_h.hero_type.label(),
+                active_h.damage_profile.label(),
+                active_h.themes_summary(),
                 draft.rerolls_left
             )
         } else {

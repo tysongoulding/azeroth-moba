@@ -1,10 +1,12 @@
-//! Role-Aware 5v5 AI Hero Bot Decision Engine (`Tank`, `Healer`, `MeleeDps`, `RangedDps`)
+//! Type- & Theme-Aware 5v5 AI Hero Bot Decision Engine (`Brawler`, `Damage`, `Support`)
 //! and `WOW_MOBA_AUTO` hands-off automation support.
 
 use bevy::prelude::*;
 
 use super::combat::{MobaHero, MAX_INVENTORY_SLOTS};
-use super::data::{ActiveItemEffect, HeroRole, Team, MOBA_CLASSES};
+use super::data::{
+    ActiveItemEffect, DamageProfile, HeroRole, HeroType, Team, MOBA_CLASSES, MOBA_HEROES,
+};
 use super::lane::{Moonwell, Structure, LANE_HALF_LEN, LANE_HALF_WIDTH};
 use super::objectives::ObjectiveClock;
 use super::progression::{MilestoneCard, MilestoneCardKind};
@@ -57,15 +59,15 @@ pub fn recommended_item_order_for_role(role: HeroRole) -> &'static [&'static str
             "major_healthstone",
             "highlanders_greaves",
             "insignia_of_the_alliance",
+            "spellbreaker_crest",
             "aegis_of_the_blood_god",
-            "quel_serrar",
             "bulwark_of_azzinoth_relic",
         ],
         HeroRole::Healer => &[
             "alterac_manna_biscuit",
             "boots_of_the_shadow_flame",
             "insignia_of_the_alliance",
-            "tidal_charm",
+            "curse_of_elements_staff",
             "staff_of_dominance",
             "flask_of_supreme_power",
         ],
@@ -73,23 +75,70 @@ pub fn recommended_item_order_for_role(role: HeroRole) -> &'static [&'static str
             "battleground_signet",
             "goblin_rocket_boots",
             "insignia_of_the_alliance",
-            "blink_strike_dagger",
-            "arcanite_reaper",
+            "sunder_cleaver",
+            "annihilator_axe",
             "thunderfury",
         ],
         HeroRole::RangedDps => &[
             "battleground_signet",
             "boots_of_the_shadow_flame",
             "insignia_of_the_alliance",
-            "zandalarian_hero_charm",
-            "neltharions_tear",
+            "curse_of_elements_staff",
+            "nightfall_spellblade",
             "sulfuras_hand_of_ragnaros",
         ],
     }
 }
 
+/// Type- and DamageProfile-tailored 6-slot item build path from `SHOP_ITEMS`.
+pub fn recommended_item_order_for_hero(hero: &MobaHero) -> &'static [&'static str; 6] {
+    match (hero.hero_type(), hero.damage_profile(), hero.role()) {
+        (HeroType::Brawler, _, HeroRole::Tank) => &[
+            "major_healthstone",
+            "highlanders_greaves",
+            "insignia_of_the_alliance",
+            "spellbreaker_crest",
+            "aegis_of_the_blood_god",
+            "bulwark_of_azzinoth_relic",
+        ],
+        (HeroType::Brawler, DamageProfile::Physical, _) => &[
+            "battleground_signet",
+            "goblin_rocket_boots",
+            "insignia_of_the_alliance",
+            "sunder_cleaver",
+            "annihilator_axe",
+            "arcanite_reaper",
+        ],
+        (HeroType::Brawler, DamageProfile::Magic | DamageProfile::Hybrid, _) => &[
+            "battleground_signet",
+            "goblin_rocket_boots",
+            "insignia_of_the_alliance",
+            "spellbreaker_crest",
+            "nightfall_spellblade",
+            "thunderfury",
+        ],
+        (HeroType::Damage, DamageProfile::Physical, _) => &[
+            "battleground_signet",
+            "goblin_rocket_boots",
+            "insignia_of_the_alliance",
+            "sunder_cleaver",
+            "annihilator_axe",
+            "ashkandi_greatsword",
+        ],
+        (HeroType::Damage, DamageProfile::Magic | DamageProfile::Hybrid, _) => &[
+            "battleground_signet",
+            "boots_of_the_shadow_flame",
+            "insignia_of_the_alliance",
+            "curse_of_elements_staff",
+            "nightfall_spellblade",
+            "sulfuras_hand_of_ragnaros",
+        ],
+        (HeroType::Support, _, _) => recommended_item_order_for_role(HeroRole::Healer),
+    }
+}
+
 /// Executes non-pausing milestone card picks, item shopping, Goblin Courier calls, Active Trinket
-/// usage (including BKB *Insignia* when stunned/feared/rooted!), and late-game Soulstone Buyback.
+/// usage (including BKB *Insignia* and `AntiMagicCarapace`), and late-game Soulstone Buyback.
 pub fn bot_economy_and_items_step(
     hero: &mut MobaHero,
     team_level: u32,
@@ -110,7 +159,7 @@ pub fn bot_economy_and_items_step(
     // 3. Purchase next recommended item if affordable
     let total_owned = hero.inventory.len() + hero.stash.len();
     if total_owned < MAX_INVENTORY_SLOTS {
-        let build = recommended_item_order_for_role(hero.role());
+        let build = recommended_item_order_for_hero(hero);
         for &item_key in build {
             let already_has = hero.inventory.iter().any(|i| i.key == item_key)
                 || hero.stash.iter().any(|i| i.key == item_key);
@@ -137,6 +186,9 @@ pub fn bot_economy_and_items_step(
                 ActiveItemEffect::BkbCleanse { .. } => cc_afflicted,
                 ActiveItemEffect::HealthstoneHeal { .. }
                 | ActiveItemEffect::AegisBarrier { .. } => hp_pct < 0.55,
+                ActiveItemEffect::AntiMagicCarapace { .. } => {
+                    hero.magic_shred_t > 0.0 || hero.silence_t > 0.0 || hp_pct < 0.65
+                }
                 ActiveItemEffect::ZandalarianBurst { .. }
                 | ActiveItemEffect::RocketBootsDash { .. } => {
                     hero.attacked_enemy_hero_t > 0.0 || hp_pct < 0.75
@@ -157,7 +209,7 @@ pub fn bot_economy_and_items_step(
 /// - Moonwell survival threshold (`HP < 45%`)
 /// - Nearby XP Wisps & Regen Globes
 /// - 4-Game Event Clock objectives (River Runes, Mercenary Camps, Center Raid Boss)
-/// - Role-specific frontline offset (`Tank` ahead, `Healer` & `RangedDps` behind)
+/// - `HeroType` frontline offset (`Brawler` ahead, `Damage` & `Support` behind)
 #[allow(clippy::too_many_arguments)]
 pub fn bot_choose_movement_target(
     hero: &MobaHero,
@@ -237,7 +289,7 @@ pub fn bot_choose_movement_target(
     }
 
     // 5. Capture allied-side Mercenary Camp when healthy and camp is active nearby
-    if hp_pct > 0.62 && matches!(hero.role(), HeroRole::Tank | HeroRole::MeleeDps) {
+    if hp_pct > 0.62 && hero.hero_type() == HeroType::Brawler {
         if let Some(camp) = objectives
             .merc_camps
             .iter()
@@ -280,17 +332,17 @@ pub fn bot_choose_movement_target(
         safe_limit_x
     };
 
-    // Role offset from the battle line:
-    // Tank initiates at the front; MeleeDps flanks; RangedDps and Healer stay safely behind!
-    let role_offset = match hero.role() {
-        HeroRole::Tank => 2.0,
-        HeroRole::MeleeDps => 0.0,
-        HeroRole::RangedDps => -11.0,
-        HeroRole::Healer => -13.5,
+    // HeroType & Role offset from the battle line:
+    // Brawler (Tank/Melee) initiates at the front; Ranged Damage and Support stay safely behind!
+    let role_offset = match (hero.hero_type(), hero.role()) {
+        (HeroType::Brawler, HeroRole::Tank) => 2.0,
+        (HeroType::Brawler, _) => 0.0,
+        (HeroType::Damage, _) => -11.0,
+        (HeroType::Support, _) => -13.5,
     };
 
-    // If Healer, stay near the most injured allied hero in the lane
-    if hero.role() == HeroRole::Healer {
+    // If Support, stay near the most injured allied hero in the lane
+    if hero.hero_type() == HeroType::Support {
         if let Some(ally) = all_heroes
             .iter()
             .filter(|a| !a.dead && a.team == hero.team && a.id != hero.id)
@@ -309,10 +361,16 @@ pub fn bot_choose_movement_target(
     )
 }
 
-/// Optional hands-off environment driver (`WOW_MOBA_AUTO=<class>`).
+/// Optional hands-off environment driver (`WOW_MOBA_AUTO=<hero_key_or_class>`).
 pub fn auto_class_from_env() -> Option<(usize, Team)> {
     let val = crate::webenv::var("WOW_MOBA_AUTO")?;
     let trimmed = val.trim();
+    if let Some(h) = MOBA_HEROES
+        .iter()
+        .find(|h| h.key.eq_ignore_ascii_case(trimmed) || h.name.eq_ignore_ascii_case(trimmed))
+    {
+        return Some((h.class_idx, Team::Alliance));
+    }
     let idx = MOBA_CLASSES
         .iter()
         .position(|c| c.name.eq_ignore_ascii_case(trimmed))
