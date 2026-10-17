@@ -55,7 +55,7 @@ pub(super) fn flat(v: Vec3) -> Vec3 {
     Vec3::new(v.x, 0.0, v.z)
 }
 
-pub(super) struct UnitSpec<'a> {
+pub(crate) struct UnitSpec<'a> {
     pub serial: u64,
     pub display: u32,
     pub scale: f32,
@@ -69,7 +69,7 @@ pub(super) struct UnitSpec<'a> {
 }
 
 /// Spawn a unit the attach builds a body for; the caller adds its own components.
-pub(super) fn spawn_unit(commands: &mut Commands, spec: &UnitSpec, pos: Vec3, yaw: f32) -> Entity {
+pub(crate) fn spawn_unit(commands: &mut Commands, spec: &UnitSpec, pos: Vec3, yaw: f32) -> Entity {
     let guid = HIGH_CREATURE | spec.serial;
     let mut pairs: Vec<(u16, u32)> = vec![
         (0, guid as u32),

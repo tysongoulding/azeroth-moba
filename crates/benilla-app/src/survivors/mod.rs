@@ -7,15 +7,15 @@
 mod abilities;
 mod auto;
 mod cards;
-mod data;
+pub(crate) mod data;
 mod enemies;
 mod grade;
-mod hero;
-mod hud;
+pub(crate) mod hero;
+pub(crate) mod hud;
 mod menu;
 mod minimap;
 mod mobility;
-mod units;
+pub(crate) mod units;
 
 use benilla_world::schedule::WorldStage;
 use bevy::prelude::*;
@@ -81,6 +81,7 @@ impl Plugin for SurvivorsPlugin {
                     .chain()
                     .after(WorldStage::Input)
                     .run_if(in_state(Phase::Playing))
+                    .run_if(resource_equals(crate::moba::GameMode::SurvivorsSolo))
                     // Entering a battleground raises its loading screen: the run waits behind it.
                     .run_if(|l: Res<crate::loading_screen::LoadingScreen>| !l.covering()),
             )
@@ -146,7 +147,7 @@ impl Plugin for SurvivorsPlugin {
 
 /// The screen the mode is on.
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub(super) enum Phase {
+pub(crate) enum Phase {
     #[default]
     Menu,
     Playing,
@@ -157,11 +158,11 @@ pub(super) enum Phase {
 
 /// Everything spawned for a run, despawned when the next begins.
 #[derive(Component)]
-pub(super) struct RunEntity;
+pub(crate) struct RunEntity;
 
 /// The class, look and battleground picked at the menu; the battleground holds for the run.
 #[derive(Resource, Default)]
-pub(super) struct Selection {
+pub(crate) struct Selection {
     pub class: Option<usize>,
     /// `(display, race, sex)`, one per race and sex the class's trainers come in.
     pub looks: Vec<(u32, u8, u8)>,
@@ -191,7 +192,7 @@ impl Selection {
 }
 
 /// An ability the hero has, with its own cooldown.
-pub(super) struct Owned {
+pub(crate) struct Owned {
     pub def: &'static AbilityDef,
     pub level: u8,
     pub cd: f32,
@@ -219,7 +220,7 @@ impl Owned {
 
 /// The hero's derived numbers, from the base and the passives.
 #[derive(Clone, Copy)]
-pub(super) struct Stats {
+pub(crate) struct Stats {
     pub might: f32,
     pub max_hp: f32,
     pub speed: f32,
@@ -232,13 +233,13 @@ pub(super) struct Stats {
     pub crit: f32,
 }
 
-pub(super) const BASE_HP: f32 = 120.0;
-pub(super) const BASE_SPEED: f32 = 7.0;
-pub(super) const BASE_MAGNET: f32 = 4.5;
+pub(crate) const BASE_HP: f32 = 120.0;
+pub(crate) const BASE_SPEED: f32 = 7.0;
+pub(crate) const BASE_MAGNET: f32 = 4.5;
 
 /// One run's state.
 #[derive(Resource)]
-pub(super) struct Run {
+pub(crate) struct Run {
     pub class: &'static ClassDef,
     pub race: u8,
     pub elapsed: f32,
@@ -352,7 +353,7 @@ impl Run {
 
 /// xorshift64*: the mode's dice, seeded from the clock.
 #[derive(Resource)]
-pub(super) struct Rng(u64);
+pub struct Rng(u64);
 
 impl Default for Rng {
     fn default() -> Self {

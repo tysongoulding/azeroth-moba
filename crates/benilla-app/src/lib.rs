@@ -11,6 +11,11 @@
 // instrument calls goes unused, and a `cfg` per item would spread seam knowledge into gameplay
 // modules. Dev builds warn normally.
 #![cfg_attr(not(feature = "dev"), allow(dead_code))]
+#![allow(
+    clippy::type_complexity,
+    clippy::empty_line_after_doc_comments,
+    clippy::items_after_test_module
+)]
 
 /// The realtime-audio allocation tripwire: in debug builds an allocation inside `sound::output`'s
 /// `no_alloc` scopes (the output IO callback, the render pass) aborts the process; release builds
@@ -96,6 +101,8 @@ mod script_calls;
 mod shaders;
 
 mod game_tip;
+/// Azeroth 5v5 Mid Brawl: the single-lane 5v5 MOBA mode (`warcraft-moba` or `?moba=1`).
+pub mod moba;
 mod name_persist;
 mod opaque2d;
 /// Where "the client is going down" is observed, in `Last`; every system that persists state on the
@@ -107,7 +114,7 @@ mod sound;
 /// puts them on a number.
 mod spell;
 /// Warcraft Survivors: the top-down survival mode the `warcraft-survivors` launcher boots.
-mod survivors;
+pub(crate) mod survivors;
 /// The melee swing refusal's latch + 4 s repeat (`SMSG_ATTACKSWING_*`).
 mod swing_refusal;
 mod target;
@@ -232,6 +239,14 @@ pub fn run_survivors(build: BuildId) -> AppExit {
     launch(build, None)
 }
 
+/// Azeroth 5v5 Mid Brawl: the client booted server-less into the 5v5 single-lane MOBA mode
+/// ([`moba`]), called by the `warcraft-moba` launcher.
+pub fn run_moba(build: BuildId) -> AppExit {
+    moba::ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+    survivors::ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+    launch(build, None)
+}
+
 /// What a crate on top of benilla adds to the built app ([`run_with`]).
 type Extension<'a> = Box<dyn FnOnce(&mut App) + 'a>;
 
@@ -301,8 +316,9 @@ fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
     // With `$WOW_CAPTURE` set the app runs a deterministic, server-less capture (net off, so no
     // NPCs stream in) and exits.
     let capturing = run_mode::scenario_active();
-    // Survivors runs server-less too, on Kalimdor; `world_map` reads the map at `Startup`.
-    let survivors = survivors::active();
+    // Survivors and MOBA run server-less too, on Kalimdor; `world_map` reads the map at `Startup`.
+    let moba = moba::active();
+    let survivors = survivors::active() || moba;
     if survivors {
         benilla_world::world_map::set_start_map(1);
     }
@@ -341,7 +357,9 @@ fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
     // (`embedded://benilla_app/shaders/…`), so no build-machine path reaches the binary.
 
     app.add_plugins(benilla_world::boot::tuned_default_plugins(Window {
-        title: if survivors {
+        title: if moba {
+            "Azeroth 5v5 Mid Brawl"
+        } else if survivors {
             "Warcraft Survivors"
         } else {
             "benilla"
@@ -441,7 +459,7 @@ fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
         },
     });
     if survivors {
-        app.add_plugins(survivors::SurvivorsPlugin);
+        app.add_plugins((survivors::SurvivorsPlugin, moba::MobaPlugin));
     }
 
     app.add_plugins(webbridge::WebBridgePlugin);

@@ -7432,6 +7432,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "warcraft-moba"
+version = "0.2.0"
+dependencies = [
+ "benilla-app",
+ "benilla-buildstamp",
+]
+
+[[package]]
 name = "warcraft-survivors"
 version = "0.2.0"
 dependencies = [
@@ -7749,6 +7757,7 @@ dependencies = [
  "clap",
  "futures-util",
  "percent-encoding",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-tungstenite 0.30.0",

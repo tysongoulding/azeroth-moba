@@ -196,7 +196,7 @@ impl Offer {
 }
 
 #[derive(Resource)]
-pub(super) struct HudFont(pub(super) Handle<Font>);
+pub(crate) struct HudFont(pub(crate) Handle<Font>);
 
 pub(super) fn rgb(hex: u32) -> Color {
     Color::srgb_u8((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
@@ -1052,17 +1052,35 @@ pub(super) fn buttons(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn keys(
     keys: Res<ButtonInput<KeyCode>>,
     phase: Res<State<Phase>>,
+    mode: Res<crate::moba::GameMode>,
     mut selection: ResMut<Selection>,
     mut run: ResMut<Run>,
+    mut moba: ResMut<crate::moba::MobaMatch>,
+    draft: Res<crate::moba::draft::TavernDraftState>,
+    mut rng: ResMut<Rng>,
     mut next: ResMut<NextState<Phase>>,
 ) {
     match phase.get() {
         Phase::Menu => {
-            if keys.just_pressed(KeyCode::Enter) && start_run(&mut run, &mut selection) {
-                next.set(Phase::Playing);
+            if keys.just_pressed(KeyCode::Enter) {
+                let started = if *mode == crate::moba::GameMode::Moba5v5 {
+                    crate::moba::start_moba_match(
+                        &mut moba,
+                        &draft,
+                        &mut selection,
+                        &mut run,
+                        &mut rng,
+                    )
+                } else {
+                    start_run(&mut run, &mut selection)
+                };
+                if started {
+                    next.set(Phase::Playing);
+                }
             }
         }
         Phase::Playing => {
@@ -2190,6 +2208,7 @@ pub(super) fn icon_tooltip(
 #[allow(clippy::type_complexity)]
 pub(super) fn show_panels(
     phase: Res<State<Phase>>,
+    mode: Res<crate::moba::GameMode>,
     mut roots: ParamSet<(
         Query<(&mut Visibility, &mut Node), With<MenuRoot>>,
         Query<(&mut Visibility, &mut Node), With<HudRoot>>,
@@ -2199,6 +2218,7 @@ pub(super) fn show_panels(
     )>,
 ) {
     let p = *phase.get();
+    let is_solo = *mode == crate::moba::GameMode::SurvivorsSolo;
     // A hidden panel leaves the layout too: a merely invisible button still takes clicks.
     let set = |(mut v, mut node): (Mut<Visibility>, Mut<Node>), on: bool| {
         let want = if on {
@@ -2218,10 +2238,10 @@ pub(super) fn show_panels(
         set(root, p == Phase::Menu);
     }
     for root in &mut roots.p1() {
-        set(root, p != Phase::Menu && p != Phase::GameOver);
+        set(root, is_solo && p != Phase::Menu && p != Phase::GameOver);
     }
     for root in &mut roots.p2() {
-        set(root, p == Phase::LevelUp);
+        set(root, is_solo && p == Phase::LevelUp);
     }
     for root in &mut roots.p3() {
         set(root, p == Phase::Paused);

@@ -1,0 +1,24 @@
+[package]
+name = "warcraft-moba"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Warcraft MOBA: the benilla client booted server-less into a 5v5 mid-only custom WoW MOBA mode on ten battlegrounds"
+
+[lints]
+workspace = true
+
+[features]
+default = ["dev"]
+dev = ["benilla-app/dev"]
+
+[dependencies]
+benilla-app = { path = "../benilla-app", default-features = false }
+
+[build-dependencies]
+benilla-buildstamp = { path = "../benilla-buildstamp" }
+
+[[bin]]
+name = "warcraft-moba"
+path = "src/main.rs"
+test = false

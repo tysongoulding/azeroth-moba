@@ -44,6 +44,10 @@ pub(super) enum MenuAction {
     Class(usize),
     Map(usize),
     Randomize,
+    ToggleGameMode,
+    ToggleDraftMode,
+    RerollBench,
+    SwapBench(usize),
     Enter,
 }
 
@@ -57,6 +61,12 @@ pub(super) struct RaceFace(u8);
 
 #[derive(Component)]
 pub(super) struct PickName;
+
+#[derive(Component)]
+pub(super) struct ModeBannerText;
+
+#[derive(Component)]
+pub(super) struct BenchInfoText;
 
 /// The saved pick, `benilla-config/survivors-pick.txt` (`localStorage` on the page):
 /// `class race sex map`, restored at the menu so a reload keeps the last hero and zone.
@@ -158,6 +168,98 @@ pub(super) fn build_menu(
             ));
         }
         zone_frame(ui, &art, f);
+
+        // --- Top-Center Mode & Tavern Bench Bar (5v5 Mid Brawl vs Survivors Solo) ---
+        ui.spawn(Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(14.0),
+            width: Val::Percent(100.0),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            row_gap: Val::Px(6.0),
+            ..default()
+        })
+        .with_children(|top| {
+            outlined_text(
+                top,
+                Node::default(),
+                (),
+                ModeBannerText,
+                GlueText {
+                    text: "Mode: Survivors Solo",
+                    size: 16.0,
+                    color: GOLD,
+                    wrap: false,
+                },
+                f,
+                1.0,
+            );
+            top.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(8.0),
+                ..default()
+            })
+            .with_children(|row| {
+                glue_button(
+                    row,
+                    &art,
+                    f,
+                    MenuAction::ToggleGameMode,
+                    "Switch Mode",
+                    136.0,
+                    28.0,
+                    GlueBtnKind::Small,
+                    1.0,
+                );
+                glue_button(
+                    row,
+                    &art,
+                    f,
+                    MenuAction::ToggleDraftMode,
+                    "Draft Mode",
+                    126.0,
+                    28.0,
+                    GlueBtnKind::Small,
+                    1.0,
+                );
+                glue_button(
+                    row,
+                    &art,
+                    f,
+                    MenuAction::RerollBench,
+                    "Reroll Hand",
+                    126.0,
+                    28.0,
+                    GlueBtnKind::Small,
+                    1.0,
+                );
+                glue_button(
+                    row,
+                    &art,
+                    f,
+                    MenuAction::SwapBench(0),
+                    "Swap Bench",
+                    126.0,
+                    28.0,
+                    GlueBtnKind::Small,
+                    1.0,
+                );
+            });
+            outlined_text(
+                top,
+                Node::default(),
+                (),
+                BenchInfoText,
+                GlueText {
+                    text: "",
+                    size: 12.0,
+                    color: Color::WHITE,
+                    wrap: false,
+                },
+                f,
+                1.0,
+            );
+        });
 
         // `CharSelectCharacterName`, GlueFontNormalHuge at BOTTOM (0,100).
         ui.spawn(Node {
@@ -524,6 +626,9 @@ pub(super) fn menu_clicks(
     actions: Query<(Entity, &MenuAction)>,
     phase: Res<State<Phase>>,
     creatures: Option<Res<crate::entities::Creatures>>,
+    mut mode: ResMut<crate::moba::GameMode>,
+    mut draft: ResMut<crate::moba::draft::TavernDraftState>,
+    mut moba: ResMut<crate::moba::MobaMatch>,
     mut selection: ResMut<Selection>,
     mut run: ResMut<Run>,
     mut rng: ResMut<Rng>,
@@ -549,6 +654,58 @@ pub(super) fn menu_clicks(
         .map(|&(_, r, s)| (r, s));
     let (race, sex) = (cur.map(|c| c.0), cur.map_or(0, |c| c.1));
     match action {
+        MenuAction::ToggleGameMode => {
+            *mode = match *mode {
+                crate::moba::GameMode::SurvivorsSolo => {
+                    *draft = crate::moba::draft::TavernDraftState::new_shuffle(
+                        &mut rng,
+                        crate::moba::data::Team::Alliance,
+                    );
+                    crate::moba::GameMode::Moba5v5
+                }
+                crate::moba::GameMode::Moba5v5 => crate::moba::GameMode::SurvivorsSolo,
+            };
+            selection.version += 1;
+        }
+        MenuAction::ToggleDraftMode => {
+            draft.mode = match draft.mode {
+                crate::moba::draft::DraftMode::TavernBenchShuffle => {
+                    crate::moba::draft::DraftMode::AllPick
+                }
+                crate::moba::draft::DraftMode::AllPick => {
+                    crate::moba::draft::DraftMode::TavernBenchShuffle
+                }
+            };
+            selection.version += 1;
+        }
+        MenuAction::RerollBench => {
+            if draft.reroll_hand(&mut rng) {
+                let card = draft.active_player_card();
+                let c = card.class_idx.min(all.len().saturating_sub(1));
+                let r = card.race;
+                let s = card.sex;
+                if let Some(l) = find(&all[c], Some(r), Some(s))
+                    .or_else(|| find(&all[c], Some(r), None))
+                    .or_else(|| find(&all[c], None, None))
+                {
+                    set(&mut selection, &all, c, l);
+                }
+            }
+        }
+        MenuAction::SwapBench(idx) => {
+            if draft.swap_with_bench(idx, &mut rng) {
+                let card = draft.active_player_card();
+                let c = card.class_idx.min(all.len().saturating_sub(1));
+                let r = card.race;
+                let s = card.sex;
+                if let Some(l) = find(&all[c], Some(r), Some(s))
+                    .or_else(|| find(&all[c], Some(r), None))
+                    .or_else(|| find(&all[c], None, None))
+                {
+                    set(&mut selection, &all, c, l);
+                }
+            }
+        }
         MenuAction::Map(i) => {
             if selection.map != i {
                 selection.map = i;
@@ -556,7 +713,12 @@ pub(super) fn menu_clicks(
             }
         }
         MenuAction::Enter => {
-            if start_run(&mut run, &mut selection) {
+            let started = if *mode == crate::moba::GameMode::Moba5v5 {
+                crate::moba::start_moba_match(&mut moba, &draft, &mut selection, &mut run, &mut rng)
+            } else {
+                start_run(&mut run, &mut selection)
+            };
+            if started {
                 next.set(Phase::Playing);
             }
         }
@@ -609,6 +771,8 @@ pub(super) fn menu_clicks(
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn refresh_menu_ui(
     selection: Res<Selection>,
+    mode: Res<crate::moba::GameMode>,
+    draft: Res<crate::moba::draft::TavernDraftState>,
     creatures: Option<Res<crate::entities::Creatures>>,
     art: Res<GlueArt>,
     mut buttons: Query<(
@@ -622,7 +786,11 @@ pub(super) fn refresh_menu_ui(
     )>,
     mut labels: Query<&mut Visibility, (With<HoverLabel>, Without<MenuAction>)>,
     mut faces: Query<(&RaceFace, &mut ImageNode)>,
-    mut name: Query<(&mut Text, &mut TextColor), With<PickName>>,
+    mut texts: ParamSet<(
+        Query<(&mut Text, &mut TextColor), With<PickName>>,
+        Query<&mut Text, With<ModeBannerText>>,
+        Query<&mut Text, With<BenchInfoText>>,
+    )>,
     mut cache: Local<(Option<u32>, bool, Vec<Vec<(u32, u8, u8)>>)>,
 ) {
     let have = creatures.is_some();
@@ -639,13 +807,19 @@ pub(super) fn refresh_menu_ui(
         .and_then(|i| selection.looks.get(i))
         .map(|&(_, r, s)| (r, s));
 
+    let is_moba = *mode == crate::moba::GameMode::Moba5v5;
     for (action, interaction, children, lock, disabled, mut node, mut vis) in &mut buttons {
         let selected = match *action {
             MenuAction::Race(r) => cur.is_some_and(|c| c.0 == r),
             MenuAction::Sex(s) => cur.is_some_and(|c| c.1 == s),
             MenuAction::Class(i) => selection.class == Some(i),
             MenuAction::Map(i) => selection.map == i,
-            MenuAction::Randomize | MenuAction::Enter => false,
+            MenuAction::ToggleGameMode
+            | MenuAction::ToggleDraftMode
+            | MenuAction::RerollBench
+            | MenuAction::SwapBench(_)
+            | MenuAction::Randomize
+            | MenuAction::Enter => false,
         };
         if let Some(mut lock) = lock {
             if lock.0 != selected {
@@ -653,7 +827,17 @@ pub(super) fn refresh_menu_ui(
             }
         }
         if let Some(mut disabled) = disabled {
-            let off = *action == MenuAction::Enter && cur.is_none();
+            let off = match *action {
+                MenuAction::Enter => cur.is_none(),
+                MenuAction::ToggleDraftMode => !is_moba,
+                MenuAction::RerollBench => {
+                    !is_moba
+                        || draft.mode != crate::moba::draft::DraftMode::TavernBenchShuffle
+                        || draft.rerolls_left == 0
+                }
+                MenuAction::SwapBench(idx) => !is_moba || idx >= draft.bench.len(),
+                _ => false,
+            };
             if disabled.0 != off {
                 disabled.0 = off;
             }
@@ -709,7 +893,7 @@ pub(super) fn refresh_menu_ui(
     }
 
     let class = selection.class_def();
-    if let Ok((mut t, mut color)) = name.single_mut() {
+    if let Ok((mut t, mut color)) = texts.p0().single_mut() {
         let want = match (class, cur) {
             (Some(c), Some((r, _))) => format!("{} {}", race_name(r), c.name),
             _ => String::new(),
@@ -721,6 +905,45 @@ pub(super) fn refresh_menu_ui(
         let want = class.map_or(GOLD, |c| rgb(c.color));
         if color.0 != want {
             color.0 = want;
+        }
+    }
+
+    if let Ok(mut t) = texts.p1().single_mut() {
+        let want = if is_moba {
+            let d = match draft.mode {
+                crate::moba::draft::DraftMode::TavernBenchShuffle => "Tavern Bench Shuffle",
+                crate::moba::draft::DraftMode::AllPick => "All Pick",
+            };
+            format!("Mode: 5v5 Mid Brawl ({d})")
+        } else {
+            "Mode: Warcraft Survivors Solo".to_string()
+        };
+        if t.0 != want {
+            t.0 = want;
+        }
+    }
+
+    if let Ok(mut t) = texts.p2().single_mut() {
+        let want = if is_moba {
+            let bench_str = if draft.bench.is_empty() {
+                "Empty".to_string()
+            } else {
+                draft
+                    .bench
+                    .iter()
+                    .map(|b| format!("{} {}", race_name(b.race), b.class_def().name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            format!(
+                "Rerolls left: {}  |  Tavern Bench: {bench_str}",
+                draft.rerolls_left
+            )
+        } else {
+            String::new()
+        };
+        if t.0 != want {
+            t.0 = want;
         }
     }
 }

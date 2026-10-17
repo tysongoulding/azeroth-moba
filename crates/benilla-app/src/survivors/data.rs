@@ -891,7 +891,7 @@ pub(crate) const MAX_ABILITIES: usize = 6;
 pub(crate) const MAX_PASSIVES: usize = 6;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub(crate) enum Stat {
+pub enum Stat {
     Might,
     MaxHp,
     Speed,

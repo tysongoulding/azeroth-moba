@@ -12,13 +12,13 @@ use crate::creature_anim::{move_flags, MovementState};
 use crate::net::{FieldChanged, Guid, ObjectStore};
 
 #[derive(Component)]
-pub(super) struct Hero {
+pub(crate) struct Hero {
     /// Vertical velocity in yards/second while airborne; 0 on the ground.
-    pub(super) vy: f32,
+    pub(crate) vy: f32,
     /// Height above the ground while airborne. Kept here, not in the transform: the creature
     /// ground clamp (`net::motion::ground_clamp_creatures`) re-seats every unit on the floor at
     /// the top of the frame, so the arc is re-applied over the ground each frame.
-    pub(super) air: f32,
+    pub(crate) air: f32,
 }
 
 /// The body radius enemies stop at.
