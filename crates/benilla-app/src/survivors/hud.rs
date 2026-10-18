@@ -861,19 +861,39 @@ pub(super) fn setup_hud(
 pub(super) fn menu_preview(
     mut commands: Commands,
     phase: Res<State<Phase>>,
+    mode: Res<crate::moba::GameMode>,
+    draft: Res<crate::moba::draft::TavernDraftState>,
     selection: Res<Selection>,
     mut run: ResMut<Run>,
     heroes: Query<Entity, With<Hero>>,
     world: benilla_world::world_point::WorldPoint,
-    mut shown: Local<Option<(usize, u32, usize)>>,
+    mut shown: Local<Option<(usize, u32, usize, usize)>>,
 ) {
     if *phase.get() != Phase::Menu {
         return;
     }
-    let want = selection
-        .class
-        .zip(selection.look.and_then(|i| selection.looks.get(i)).copied());
-    let key = want.map(|(c, l)| (c, l.0, selection.stage));
+    let want = if *mode == crate::moba::GameMode::Moba5v5 {
+        let card = draft.active_player_card();
+        let h_def = card.hero_def();
+        let class = h_def.class_idx.min(data::CLASSES.len().saturating_sub(1));
+        let surv_class = &data::CLASSES[class];
+        let display = h_def
+            .display_override
+            .or_else(|| {
+                selection
+                    .look
+                    .and_then(|i| selection.looks.get(i))
+                    .map(|&(d, _, _)| d)
+            })
+            .unwrap_or_else(|| surv_class.looks.first().copied().unwrap_or(1300));
+        Some((class, (display, card.race, card.sex), 1000 + card.hero_idx))
+    } else {
+        selection
+            .class
+            .zip(selection.look.and_then(|i| selection.looks.get(i)).copied())
+            .map(|(c, l)| (c, l, 0))
+    };
+    let key = want.map(|(c, l, h_tag)| (c, l.0, selection.stage, h_tag));
     if key == *shown && (key.is_none() || !heroes.is_empty()) {
         return;
     }
@@ -881,7 +901,7 @@ pub(super) fn menu_preview(
         commands.entity(e).despawn();
     }
     *shown = key;
-    let Some((class, (display, race, sex))) = want else {
+    let Some((class, (display, race, sex), _)) = want else {
         return;
     };
     let mut pos = hero::arena(selection.stage_def());

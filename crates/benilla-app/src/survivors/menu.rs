@@ -1,9 +1,15 @@
 //! The run's pick screen, laid out like the 1.12 character create and select glue screens and built
-//! from their own widgets and art ([`crate::glue`]): the race, gender and class tower on the left,
-//! the zone list in the character-select frame on the right, Enter World at the bottom.
-//!
-//! The survivors HUD lays out on the 768-unit canvas through `UiScale`, so every glue builder here
-//! takes a unit scale.
+//! from their own widgets and art ([`crate::glue`]):
+//! - In **5v5 Mid Brawl (`GameMode::Moba5v5`)**:
+//!   - **Left Frame (`MobaRosterRoot`)**: Interactive **36-Hero Theme Roster** with 3-Type Filter
+//!     Tabs (`All (36)`, `Brawler (14)`, `Damage (12)`, `Support (10)`) and clickable hero cards
+//!     for every single one of the 36 characters in [`crate::moba::data::MOBA_HEROES`].
+//!   - **Right Frame (`MobaRightRoot`)**: **Hero Dossier & Ability Kit Inspector** showing the
+//!     selected hero's `HeroType`, `DamageProfile`, `ThemeTag`s, `HP / Armor / Magic Resist`, and
+//!     all 7 abilities (`Auto`, `Q`, `W`, `E`, `R1`, `R2`, `F`), plus the 4 Mid-Only Battlegrounds.
+//! - In **Warcraft Survivors (`GameMode::SurvivorsSolo`)**:
+//!   - **Left Frame (`SurvivorsTowerRoot`)**: Classic race, gender, and class tower.
+//!   - **Right Frame (`SurvivorsZoneRoot`)**: Classic 10-battleground zone list.
 
 use bevy::prelude::*;
 use bevy::ui_render::ui_material::MaterialNode;
@@ -18,6 +24,7 @@ use crate::glue::widgets::{
     HoverLabel, LockHighlight,
 };
 use crate::glue::GlueClicks;
+use crate::moba::data::{HeroType, MOBA_HEROES, MOBA_MAPS};
 
 /// The create screen's two race columns.
 const ALLIANCE: [u8; 4] = [1, 3, 4, 7];
@@ -25,7 +32,7 @@ const HORDE: [u8; 4] = [2, 5, 6, 8];
 
 /// `CharacterSelectCharacterFrame`'s border and fill tints.
 const FRAME_BORDER: Color = Color::srgb(0.8, 0.8, 0.8);
-const FRAME_FILL: Color = Color::srgba(0.09, 0.09, 0.09, 0.85);
+const FRAME_FILL: Color = Color::srgba(0.09, 0.09, 0.09, 0.88);
 
 /// The tower ends under the class grid and Randomize, where the create screen's appearance dials
 /// would start: there is nothing to customise here.
@@ -37,12 +44,18 @@ const ROW_PITCH: f32 = 36.0;
 const ROW_H: f32 = 34.0;
 const ROW_W: f32 = 228.0;
 
+/// Active `HeroType` filter tab in the 36-Hero MOBA Roster menu (`None` = All 36).
+#[derive(Resource, Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct MobaMenuFilter(pub Option<HeroType>);
+
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum MenuAction {
     Race(u8),
     Sex(u8),
     Class(usize),
     Map(usize),
+    SelectHero(usize),
+    FilterHeroType(Option<HeroType>),
     Randomize,
     ToggleGameMode,
     ToggleDraftMode,
@@ -55,6 +68,21 @@ pub(super) enum MenuAction {
 /// On [`MenuRoot`] once the glue art is in and the screen is built.
 #[derive(Component)]
 pub(super) struct MenuBuilt;
+
+#[derive(Component)]
+pub(super) struct SurvivorsTowerRoot;
+
+#[derive(Component)]
+pub(super) struct SurvivorsZoneRoot;
+
+#[derive(Component)]
+pub(super) struct MobaRosterRoot;
+
+#[derive(Component)]
+pub(super) struct MobaRightRoot;
+
+#[derive(Component)]
+pub(super) struct HeroDossierText;
 
 /// A race button's face, re-cropped to the picked gender.
 #[derive(Component)]
@@ -144,7 +172,28 @@ fn set(sel: &mut Selection, all: &[Vec<(u32, u8, u8)>], class: usize, look: usiz
     sel.version += 1;
 }
 
-/// Build the screen into [`MenuRoot`] once the archives are readable, so the glue art is there.
+fn sync_selection_from_card(
+    selection: &mut Selection,
+    card: crate::moba::draft::HeroCard,
+    all: Option<&[Vec<(u32, u8, u8)>]>,
+) {
+    let c = card.class_idx.min(data::CLASSES.len().saturating_sub(1));
+    if let Some(all) = all {
+        if let Some(looks) = all.get(c) {
+            if let Some(l) = find(looks, Some(card.race), Some(card.sex))
+                .or_else(|| find(looks, Some(card.race), None))
+                .or_else(|| find(looks, None, None))
+            {
+                set(selection, all, c, l);
+                return;
+            }
+        }
+    }
+    selection.class = Some(c);
+    selection.version += 1;
+}
+
+/// Build the screen into [`MenuRoot`] once the glue art is in, so the glue art is there.
 pub(super) fn build_menu(
     mut commands: Commands,
     roots: Query<Entity, (With<MenuRoot>, Without<MenuBuilt>)>,
@@ -159,25 +208,31 @@ pub(super) fn build_menu(
     art.ensure_loaded(&mut assets, &mut images, &mut add_mats);
     let f = &font.0;
     commands.entity(root).insert(MenuBuilt).with_children(|ui| {
+        // 1. Survivors Classic Left Tower & Right Zone Frame
         tower(ui, &art, f);
+        zone_frame(ui, &art, f);
+
+        // 2. MOBA 36-Hero Roster Frame (Left) & Hero Dossier + Battleground Frame (Right)
+        moba_roster_frame(ui, &art, f);
+        moba_right_frame(ui, &art, f);
+
         // `CharacterCreateWoWLogo`, 256×128 at TOPLEFT (3,-7), after the tower so it draws over
         // the border art, as the create screen orders it.
         if let Some(logo) = &art.logo {
             ui.spawn((
                 ImageNode::new(logo.clone()),
-                abs(1.0, 3.0, 7.0, 256.0, 128.0),
+                abs(1.0, 3.0, 7.0, 180.0, 90.0),
             ));
         }
-        zone_frame(ui, &art, f);
 
         // --- Top-Center Mode & Tavern Bench Bar (5v5 Mid Brawl vs Survivors Solo) ---
         ui.spawn(Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(14.0),
+            top: Val::Px(10.0),
             width: Val::Percent(100.0),
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
-            row_gap: Val::Px(6.0),
+            row_gap: Val::Px(5.0),
             ..default()
         })
         .with_children(|top| {
@@ -187,8 +242,8 @@ pub(super) fn build_menu(
                 (),
                 ModeBannerText,
                 GlueText {
-                    text: "Mode: Survivors Solo",
-                    size: 16.0,
+                    text: "Mode: 5v5 Mid Brawl (36 Theme Heroes)",
+                    size: 15.0,
                     color: GOLD,
                     wrap: false,
                 },
@@ -197,7 +252,7 @@ pub(super) fn build_menu(
             );
             top.spawn(Node {
                 flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(8.0),
+                column_gap: Val::Px(6.0),
                 ..default()
             })
             .with_children(|row| {
@@ -207,8 +262,8 @@ pub(super) fn build_menu(
                     f,
                     MenuAction::ToggleGameMode,
                     "Switch Mode",
-                    124.0,
-                    28.0,
+                    112.0,
+                    26.0,
                     GlueBtnKind::Small,
                     1.0,
                 );
@@ -218,8 +273,8 @@ pub(super) fn build_menu(
                     f,
                     MenuAction::ToggleDraftMode,
                     "Draft Mode",
-                    118.0,
-                    28.0,
+                    108.0,
+                    26.0,
                     GlueBtnKind::Small,
                     1.0,
                 );
@@ -228,9 +283,20 @@ pub(super) fn build_menu(
                     &art,
                     f,
                     MenuAction::CycleHero,
-                    "Cycle Hero (36)",
-                    132.0,
-                    28.0,
+                    "Next Hero",
+                    104.0,
+                    26.0,
+                    GlueBtnKind::Small,
+                    1.0,
+                );
+                glue_button(
+                    row,
+                    &art,
+                    f,
+                    MenuAction::Randomize,
+                    "Random Hero",
+                    112.0,
+                    26.0,
                     GlueBtnKind::Small,
                     1.0,
                 );
@@ -240,8 +306,8 @@ pub(super) fn build_menu(
                     f,
                     MenuAction::RerollBench,
                     "Reroll Hand",
-                    118.0,
-                    28.0,
+                    108.0,
+                    26.0,
                     GlueBtnKind::Small,
                     1.0,
                 );
@@ -251,8 +317,8 @@ pub(super) fn build_menu(
                     f,
                     MenuAction::SwapBench(0),
                     "Swap Bench",
-                    118.0,
-                    28.0,
+                    108.0,
+                    26.0,
                     GlueBtnKind::Small,
                     1.0,
                 );
@@ -264,7 +330,7 @@ pub(super) fn build_menu(
                 BenchInfoText,
                 GlueText {
                     text: "",
-                    size: 12.0,
+                    size: 11.5,
                     color: Color::WHITE,
                     wrap: false,
                 },
@@ -273,10 +339,10 @@ pub(super) fn build_menu(
             );
         });
 
-        // `CharSelectCharacterName`, GlueFontNormalHuge at BOTTOM (0,100).
+        // `CharSelectCharacterName`, GlueFontNormalHuge at BOTTOM (0,94).
         ui.spawn(Node {
             position_type: PositionType::Absolute,
-            bottom: Val::Px(100.0),
+            bottom: Val::Px(94.0),
             width: Val::Percent(100.0),
             justify_content: JustifyContent::Center,
             ..default()
@@ -289,7 +355,7 @@ pub(super) fn build_menu(
                 PickName,
                 GlueText {
                     text: "",
-                    size: 22.0,
+                    size: 20.0,
                     color: GOLD,
                     wrap: false,
                 },
@@ -297,10 +363,10 @@ pub(super) fn build_menu(
                 1.0,
             );
         });
-        // `CharSelectEnterWorldButton`, 200×60 at BOTTOM (0,30).
+        // `CharSelectEnterWorldButton`, 200×60 at BOTTOM (0,24).
         ui.spawn(Node {
             position_type: PositionType::Absolute,
-            bottom: Val::Px(30.0),
+            bottom: Val::Px(24.0),
             width: Val::Percent(100.0),
             justify_content: JustifyContent::Center,
             ..default()
@@ -313,7 +379,7 @@ pub(super) fn build_menu(
                 MenuAction::Enter,
                 "Enter World",
                 200.0,
-                60.0,
+                56.0,
                 GlueBtnKind::Normal,
                 1.0,
             );
@@ -321,18 +387,375 @@ pub(super) fn build_menu(
     });
 }
 
+/// Interactive 36-Hero Roster Frame on the Left side of the Menu (`GameMode::Moba5v5`).
+fn moba_roster_frame(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>) {
+    let px = Val::Px;
+    ui.spawn((
+        MobaRosterRoot,
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(12.0),
+            top: px(72.0),
+            width: px(332.0),
+            height: px(616.0),
+            flex_direction: FlexDirection::Column,
+            padding: UiRect::all(px(10.0)),
+            row_gap: px(5.0),
+            ..default()
+        },
+    ))
+    .with_children(|frame| {
+        if let (Some(bg), Some(border)) = (&art.tooltip_bg, &art.name_border) {
+            frame.spawn((
+                tiled_bg_node(bg.clone(), NAME_EDGE, 1.0, FRAME_FILL),
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(4.0),
+                    right: px(4.0),
+                    top: px(4.0),
+                    bottom: px(4.0),
+                    ..default()
+                },
+            ));
+            backdrop_border(frame, border, NAME_EDGE, FRAME_BORDER);
+        } else {
+            frame.spawn((BackgroundColor(FRAME_FILL), crate::glue::widgets::overlay()));
+        }
+
+        // Header
+        outlined_text(
+            frame,
+            Node {
+                width: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                margin: UiRect::top(px(2.0)),
+                ..default()
+            },
+            (),
+            (),
+            GlueText {
+                text: "36 Theme Heroes — Select Character",
+                size: 14.0,
+                color: GOLD,
+                wrap: false,
+            },
+            f,
+            1.0,
+        );
+
+        // 4 Type Filter Tabs: All (36), Brawler (14), Damage (12), Support (10)
+        frame
+            .spawn(Node {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceBetween,
+                column_gap: px(4.0),
+                margin: UiRect::bottom(px(2.0)),
+                ..default()
+            })
+            .with_children(|tabs| {
+                for (filter, label) in [
+                    (None, "All (36)"),
+                    (Some(HeroType::Brawler), "Brawler (14)"),
+                    (Some(HeroType::Damage), "Damage (12)"),
+                    (Some(HeroType::Support), "Support (10)"),
+                ] {
+                    tabs.spawn((
+                        MenuAction::FilterHeroType(filter),
+                        Button,
+                        LockHighlight::default(),
+                        Node {
+                            flex_grow: 1.0,
+                            height: px(22.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            border: UiRect::all(px(1.0)),
+                            border_radius: BorderRadius::all(px(3.0)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.16, 0.14, 0.10, 0.92)),
+                        BorderColor::all(Color::srgb(0.45, 0.38, 0.22)),
+                    ))
+                    .with_children(|btn| {
+                        outlined_text(
+                            btn,
+                            Node::default(),
+                            (),
+                            (),
+                            GlueText {
+                                text: label,
+                                size: 10.5,
+                                color: GOLD,
+                                wrap: false,
+                            },
+                            f,
+                            1.0,
+                        );
+                    });
+                }
+            });
+
+        // 2-Column Grid of All 36 Heroes (`0..36`)
+        frame
+            .spawn(Node {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Row,
+                flex_wrap: FlexWrap::Wrap,
+                justify_content: JustifyContent::SpaceBetween,
+                column_gap: px(4.0),
+                row_gap: px(3.0),
+                ..default()
+            })
+            .with_children(|grid| {
+                for h in &MOBA_HEROES {
+                    let type_badge = h.hero_type.short_label();
+                    let dmg_short = match h.damage_profile {
+                        crate::moba::data::DamageProfile::Physical => "Phys",
+                        crate::moba::data::DamageProfile::Magic => "Mag",
+                        crate::moba::data::DamageProfile::Hybrid => "Hyb",
+                    };
+                    let top_line = format!("[{type_badge}] {}", h.name);
+                    let sub_themes = h
+                        .themes
+                        .iter()
+                        .take(3)
+                        .map(|t| t.label())
+                        .collect::<Vec<_>>()
+                        .join("·");
+                    let bottom_line = format!("{dmg_short} | {sub_themes}");
+
+                    grid.spawn((
+                        MenuAction::SelectHero(h.idx),
+                        Button,
+                        LockHighlight::default(),
+                        Node {
+                            width: px(152.0),
+                            height: px(27.0),
+                            flex_direction: FlexDirection::Column,
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::FlexStart,
+                            padding: UiRect::axes(px(5.0), px(1.0)),
+                            border: UiRect::all(px(1.0)),
+                            border_radius: BorderRadius::all(px(3.0)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.13, 0.12, 0.15, 0.90)),
+                        BorderColor::all(Color::srgb(0.35, 0.32, 0.25)),
+                    ))
+                    .with_children(|card_btn| {
+                        outlined_text(
+                            card_btn,
+                            Node::default(),
+                            (),
+                            (),
+                            GlueText {
+                                text: &top_line,
+                                size: 10.5,
+                                color: rgb(h.color),
+                                wrap: false,
+                            },
+                            f,
+                            1.0,
+                        );
+                        outlined_text(
+                            card_btn,
+                            Node::default(),
+                            (),
+                            (),
+                            GlueText {
+                                text: &bottom_line,
+                                size: 8.8,
+                                color: Color::srgb(0.80, 0.80, 0.84),
+                                wrap: false,
+                            },
+                            f,
+                            1.0,
+                        );
+                    });
+                }
+            });
+    });
+}
+
+/// Right Frame in `GameMode::Moba5v5`: Hero Kit & Theme Dossier + 4 Mid-Only Battlegrounds.
+fn moba_right_frame(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>) {
+    let px = Val::Px;
+    ui.spawn((
+        MobaRightRoot,
+        Node {
+            position_type: PositionType::Absolute,
+            right: px(12.0),
+            top: px(72.0),
+            width: px(340.0),
+            height: px(616.0),
+            flex_direction: FlexDirection::Column,
+            padding: UiRect::all(px(12.0)),
+            row_gap: px(8.0),
+            ..default()
+        },
+    ))
+    .with_children(|frame| {
+        if let (Some(bg), Some(border)) = (&art.tooltip_bg, &art.name_border) {
+            frame.spawn((
+                tiled_bg_node(bg.clone(), NAME_EDGE, 1.0, FRAME_FILL),
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(4.0),
+                    right: px(4.0),
+                    top: px(4.0),
+                    bottom: px(4.0),
+                    ..default()
+                },
+            ));
+            backdrop_border(frame, border, NAME_EDGE, FRAME_BORDER);
+        } else {
+            frame.spawn((BackgroundColor(FRAME_FILL), crate::glue::widgets::overlay()));
+        }
+
+        // Top section: Selected Hero Dossier & Full 7-Ability Kit
+        outlined_text(
+            frame,
+            Node {
+                width: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            (),
+            (),
+            GlueText {
+                text: "Hero Dossier — Themes & Abilities",
+                size: 14.0,
+                color: GOLD,
+                wrap: false,
+            },
+            f,
+            1.0,
+        );
+
+        frame
+            .spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    min_height: px(390.0),
+                    padding: UiRect::all(px(8.0)),
+                    border: UiRect::all(px(1.0)),
+                    border_radius: BorderRadius::all(px(4.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.05, 0.05, 0.07, 0.90)),
+                BorderColor::all(Color::srgb(0.42, 0.35, 0.20)),
+            ))
+            .with_children(|box_node| {
+                box_node.spawn((
+                    HeroDossierText,
+                    Text::new(""),
+                    TextFont {
+                        font: f.clone(),
+                        font_size: 11.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.94, 0.92, 0.86)),
+                ));
+            });
+
+        // Bottom section: 4 Single-Lane MOBA Battlegrounds
+        outlined_text(
+            frame,
+            Node {
+                width: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                margin: UiRect::top(px(2.0)),
+                ..default()
+            },
+            (),
+            (),
+            GlueText {
+                text: "Choose 5v5 Mid Battleground",
+                size: 13.5,
+                color: GOLD,
+                wrap: false,
+            },
+            f,
+            1.0,
+        );
+
+        frame
+            .spawn(Node {
+                width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(4.0),
+                ..default()
+            })
+            .with_children(|maps_col| {
+                for (i, m) in MOBA_MAPS.iter().enumerate() {
+                    maps_col
+                        .spawn((
+                            MenuAction::Map(i),
+                            Button,
+                            LockHighlight::default(),
+                            Node {
+                                width: Val::Percent(100.0),
+                                height: px(31.0),
+                                flex_direction: FlexDirection::Column,
+                                justify_content: JustifyContent::Center,
+                                padding: UiRect::axes(px(8.0), px(2.0)),
+                                border: UiRect::all(px(1.0)),
+                                border_radius: BorderRadius::all(px(3.0)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(0.14, 0.12, 0.10, 0.90)),
+                            BorderColor::all(Color::srgb(0.38, 0.33, 0.22)),
+                        ))
+                        .with_children(|b| {
+                            outlined_text(
+                                b,
+                                Node::default(),
+                                (),
+                                (),
+                                GlueText {
+                                    text: m.name,
+                                    size: 12.0,
+                                    color: GOLD,
+                                    wrap: false,
+                                },
+                                f,
+                                1.0,
+                            );
+                            outlined_text(
+                                b,
+                                Node::default(),
+                                (),
+                                (),
+                                GlueText {
+                                    text: m.zone,
+                                    size: 9.5,
+                                    color: Color::srgb(0.82, 0.82, 0.85),
+                                    wrap: false,
+                                },
+                                f,
+                                1.0,
+                            );
+                        });
+                }
+            });
+    });
+}
+
 /// `CharacterCreateConfigurationFrame`, 206×600 at TOPLEFT (28,-74): the race columns under the
 /// faction banners, the gender pair, the class grid, the class text and Randomize.
 fn tower(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>) {
     let px = Val::Px;
-    ui.spawn(Node {
-        position_type: PositionType::Absolute,
-        left: px(28.0),
-        top: px(74.0),
-        width: px(206.0),
-        height: px(TOWER_H),
-        ..default()
-    })
+    ui.spawn((
+        SurvivorsTowerRoot,
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(28.0),
+            top: px(74.0),
+            width: px(206.0),
+            height: px(TOWER_H),
+            ..default()
+        },
+    ))
     .with_children(|tower| {
         if let Some(bg) = &art.tower_bg {
             tower.spawn((
@@ -457,7 +880,6 @@ fn tower(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>) {
         tower
             .spawn(Node {
                 position_type: PositionType::Absolute,
-                // The gender pair's centre line: 53 + (2·48 + 5)/2 ≈ 103.
                 left: px(103.0 - (3.0 * 48.0 + 2.0 * 4.0) / 2.0),
                 width: px(3.0 * 48.0 + 2.0 * 4.0),
                 top: px(368.0),
@@ -524,14 +946,17 @@ fn zone_frame(ui: &mut ChildSpawnerCommands, art: &GlueArt, f: &Handle<Font>) {
         .collect();
     order.sort_by_key(|&(i, lo, _)| (lo, data::MAPS[i].name));
 
-    ui.spawn(Node {
-        position_type: PositionType::Absolute,
-        right: px(5.0),
-        top: px(15.0),
-        width: px(260.0),
-        height: px(642.0),
-        ..default()
-    })
+    ui.spawn((
+        SurvivorsZoneRoot,
+        Node {
+            position_type: PositionType::Absolute,
+            right: px(5.0),
+            top: px(15.0),
+            width: px(260.0),
+            height: px(642.0),
+            ..default()
+        },
+    ))
     .with_children(|frame| {
         if let (Some(bg), Some(border)) = (&art.tooltip_bg, &art.name_border) {
             frame.spawn((
@@ -640,6 +1065,7 @@ pub(super) fn menu_clicks(
     creatures: Option<Res<crate::entities::Creatures>>,
     mut mode: ResMut<crate::moba::GameMode>,
     mut draft: ResMut<crate::moba::draft::TavernDraftState>,
+    mut filter: ResMut<MobaMenuFilter>,
     mut moba: ResMut<crate::moba::MobaMatch>,
     mut selection: ResMut<Selection>,
     mut run: ResMut<Run>,
@@ -649,9 +1075,6 @@ pub(super) fn menu_clicks(
     if *phase.get() != Phase::Menu {
         return;
     }
-    let Some(creatures) = creatures.as_deref() else {
-        return;
-    };
     let Some(action) = actions
         .iter()
         .find(|(e, _)| clicks.hit(*e))
@@ -659,12 +1082,13 @@ pub(super) fn menu_clicks(
     else {
         return;
     };
-    let all = all_looks(creatures);
+    let all = creatures.as_deref().map(all_looks);
     let cur = selection
         .look
         .and_then(|i| selection.looks.get(i))
         .map(|&(_, r, s)| (r, s));
     let (race, sex) = (cur.map(|c| c.0), cur.map_or(0, |c| c.1));
+
     match action {
         MenuAction::ToggleGameMode => {
             *mode = match *mode {
@@ -690,46 +1114,28 @@ pub(super) fn menu_clicks(
             };
             selection.version += 1;
         }
+        MenuAction::FilterHeroType(new_filter) => {
+            filter.0 = new_filter;
+            selection.version += 1;
+        }
+        MenuAction::SelectHero(hero_idx) => {
+            let card = draft.set_hero_index(hero_idx, &mut rng);
+            sync_selection_from_card(&mut selection, card, all.as_deref());
+        }
         MenuAction::CycleHero => {
             let card = draft.cycle_hero(&mut rng);
-            let c = card.class_idx.min(all.len().saturating_sub(1));
-            let r = card.race;
-            let s = card.sex;
-            if let Some(l) = find(&all[c], Some(r), Some(s))
-                .or_else(|| find(&all[c], Some(r), None))
-                .or_else(|| find(&all[c], None, None))
-            {
-                set(&mut selection, &all, c, l);
-            } else {
-                selection.version += 1;
-            }
+            sync_selection_from_card(&mut selection, card, all.as_deref());
         }
         MenuAction::RerollBench => {
             if draft.reroll_hand(&mut rng) {
                 let card = draft.active_player_card();
-                let c = card.class_idx.min(all.len().saturating_sub(1));
-                let r = card.race;
-                let s = card.sex;
-                if let Some(l) = find(&all[c], Some(r), Some(s))
-                    .or_else(|| find(&all[c], Some(r), None))
-                    .or_else(|| find(&all[c], None, None))
-                {
-                    set(&mut selection, &all, c, l);
-                }
+                sync_selection_from_card(&mut selection, card, all.as_deref());
             }
         }
         MenuAction::SwapBench(idx) => {
             if draft.swap_with_bench(idx, &mut rng) {
                 let card = draft.active_player_card();
-                let c = card.class_idx.min(all.len().saturating_sub(1));
-                let r = card.race;
-                let s = card.sex;
-                if let Some(l) = find(&all[c], Some(r), Some(s))
-                    .or_else(|| find(&all[c], Some(r), None))
-                    .or_else(|| find(&all[c], None, None))
-                {
-                    set(&mut selection, &all, c, l);
-                }
+                sync_selection_from_card(&mut selection, card, all.as_deref());
             }
         }
         MenuAction::Map(i) => {
@@ -750,18 +1156,10 @@ pub(super) fn menu_clicks(
         }
         MenuAction::Randomize => {
             if *mode == crate::moba::GameMode::Moba5v5 {
-                let random_hero = rng.index(crate::moba::data::MOBA_HEROES.len());
+                let random_hero = rng.index(MOBA_HEROES.len());
                 let card = draft.set_hero_index(random_hero, &mut rng);
-                let c = card.class_idx.min(all.len().saturating_sub(1));
-                if let Some(l) = find(&all[c], Some(card.race), Some(card.sex))
-                    .or_else(|| find(&all[c], Some(card.race), None))
-                    .or_else(|| find(&all[c], None, None))
-                {
-                    set(&mut selection, &all, c, l);
-                } else {
-                    selection.version += 1;
-                }
-            } else {
+                sync_selection_from_card(&mut selection, card, all.as_deref());
+            } else if let Some(all) = all.as_deref() {
                 let picks: Vec<(usize, usize)> = all
                     .iter()
                     .enumerate()
@@ -769,19 +1167,19 @@ pub(super) fn menu_clicks(
                     .collect();
                 if !picks.is_empty() {
                     let (c, l) = picks[rng.index(picks.len())];
-                    set(&mut selection, &all, c, l);
+                    set(&mut selection, all, c, l);
                 }
             }
         }
-        // The class keeps the race and gender where it can.
         MenuAction::Class(c) => {
+            let Some(all) = all.as_deref() else { return };
             let looks = &all[c];
             let l = find(looks, race, Some(sex))
                 .or_else(|| find(looks, race, None))
                 .or_else(|| find(looks, None, Some(sex)))
                 .or_else(|| find(looks, None, None));
             if let Some(l) = l {
-                set(&mut selection, &all, c, l);
+                set(&mut selection, all, c, l);
                 if *mode == crate::moba::GameMode::Moba5v5 {
                     let picked_race = looks[l].1;
                     let picked_sex = looks[l].2;
@@ -789,13 +1187,13 @@ pub(super) fn menu_clicks(
                 }
             }
         }
-        // The race keeps the class where it can, else takes the first class it has.
         MenuAction::Race(r) => {
+            let Some(all) = all.as_deref() else { return };
             let classes = selection.class.into_iter().chain(0..all.len());
             for c in classes {
                 let l = find(&all[c], Some(r), Some(sex)).or_else(|| find(&all[c], Some(r), None));
                 if let Some(l) = l {
-                    set(&mut selection, &all, c, l);
+                    set(&mut selection, all, c, l);
                     if *mode == crate::moba::GameMode::Moba5v5 {
                         let picked_sex = all[c][l].2;
                         draft.set_all_pick_class(c, r, picked_sex, &mut rng);
@@ -805,9 +1203,10 @@ pub(super) fn menu_clicks(
             }
         }
         MenuAction::Sex(s) => {
+            let Some(all) = all.as_deref() else { return };
             if let Some(c) = selection.class {
                 if let Some(l) = find(&all[c], race, Some(s)) {
-                    set(&mut selection, &all, c, l);
+                    set(&mut selection, all, c, l);
                 }
             }
         }
@@ -815,30 +1214,101 @@ pub(super) fn menu_clicks(
     save_pick(&selection);
 }
 
+fn format_hero_dossier(h: &crate::moba::heroes::MobaHeroDef) -> String {
+    format!(
+        "#{:02} {} — {}\n\
+         Type: {}  |  Damage: {}  |  Power: {}\n\
+         Themes: [{}]\n\
+         Base Stats: {:.0} HP  |  {:.0} Armor  |  {:.0} MR  |  {:.0} yd Range\n\n\
+         [Auto] {} ({:.1}s):\n  {}\n\
+         [Q] {} ({:.1}s, {:.0}p):\n  {}\n\
+         [W] {} ({:.1}s, {:.0}p):\n  {}\n\
+         [E] {} ({:.1}s, {:.0}p):\n  {}\n\
+         [R1 — Lv10] {} ({:.0}s):\n  {}\n\
+         [R2 — Lv10] {} ({:.0}s):\n  {}\n\
+         [F — Mobility] {} ({:.1}s):\n  {}",
+        h.idx + 1,
+        h.name,
+        h.title,
+        h.hero_type.label(),
+        h.damage_profile.label(),
+        h.power_type.label(),
+        h.themes_summary(),
+        h.base_hp,
+        h.base_armor,
+        h.base_magic_resist,
+        h.attack_range,
+        h.auto_primary.name,
+        h.auto_primary.cooldown,
+        h.auto_primary.desc,
+        h.q_skill.name,
+        h.q_skill.cooldown,
+        h.q_skill.power_cost,
+        h.q_skill.desc,
+        h.w_skill.name,
+        h.w_skill.cooldown,
+        h.w_skill.power_cost,
+        h.w_skill.desc,
+        h.e_skill.name,
+        h.e_skill.cooldown,
+        h.e_skill.power_cost,
+        h.e_skill.desc,
+        h.ultimates[0].name,
+        h.ultimates[0].cooldown,
+        h.ultimates[0].desc,
+        h.ultimates[1].name,
+        h.ultimates[1].cooldown,
+        h.ultimates[1].desc,
+        h.mobility.name,
+        h.mobility.cooldown,
+        h.mobility.desc,
+    )
+}
+
 /// The screen's per-frame state: the locked highlights, hover labels, which races and classes
-/// the pick allows, the gender on the race faces, the name line and Enter World.
+/// the pick allows, the gender on the race faces, the 36-Hero MOBA Roster & Dossier, and Enter World.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn refresh_menu_ui(
     selection: Res<Selection>,
     mode: Res<crate::moba::GameMode>,
     draft: Res<crate::moba::draft::TavernDraftState>,
+    filter: Res<MobaMenuFilter>,
     creatures: Option<Res<crate::entities::Creatures>>,
     art: Res<GlueArt>,
+    mut mode_roots: ParamSet<(
+        Query<&mut Visibility, With<SurvivorsTowerRoot>>,
+        Query<&mut Visibility, With<SurvivorsZoneRoot>>,
+        Query<&mut Visibility, With<MobaRosterRoot>>,
+        Query<&mut Visibility, With<MobaRightRoot>>,
+    )>,
     mut buttons: Query<(
         &MenuAction,
         &Interaction,
         &Children,
         Option<&mut LockHighlight>,
         Option<&mut GlueDisabled>,
+        Option<&mut BorderColor>,
+        Option<&mut BackgroundColor>,
         &mut Node,
         &mut Visibility,
     )>,
-    mut labels: Query<&mut Visibility, (With<HoverLabel>, Without<MenuAction>)>,
+    mut labels: Query<
+        &mut Visibility,
+        (
+            With<HoverLabel>,
+            Without<MenuAction>,
+            Without<SurvivorsTowerRoot>,
+            Without<SurvivorsZoneRoot>,
+            Without<MobaRosterRoot>,
+            Without<MobaRightRoot>,
+        ),
+    >,
     mut faces: Query<(&RaceFace, &mut ImageNode)>,
     mut texts: ParamSet<(
         Query<(&mut Text, &mut TextColor), With<PickName>>,
         Query<&mut Text, With<ModeBannerText>>,
         Query<&mut Text, With<BenchInfoText>>,
+        Query<&mut Text, With<HeroDossierText>>,
     )>,
     mut cache: Local<(Option<u32>, bool, Vec<Vec<(u32, u8, u8)>>)>,
 ) {
@@ -857,12 +1327,55 @@ pub(super) fn refresh_menu_ui(
         .map(|&(_, r, s)| (r, s));
 
     let is_moba = *mode == crate::moba::GameMode::Moba5v5;
-    for (action, interaction, children, lock, disabled, mut node, mut vis) in &mut buttons {
+    let surv_vis = if is_moba {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    let moba_vis = if is_moba {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut mode_roots.p0() {
+        if *v != surv_vis {
+            *v = surv_vis;
+        }
+    }
+    for mut v in &mut mode_roots.p1() {
+        if *v != surv_vis {
+            *v = surv_vis;
+        }
+    }
+    for mut v in &mut mode_roots.p2() {
+        if *v != moba_vis {
+            *v = moba_vis;
+        }
+    }
+    for mut v in &mut mode_roots.p3() {
+        if *v != moba_vis {
+            *v = moba_vis;
+        }
+    }
+
+    let active_hero_idx = draft.active_player_card().hero_idx;
+
+    for (action, interaction, children, lock, disabled, border_color, bg_color, mut node, mut vis) in
+        &mut buttons
+    {
         let selected = match *action {
             MenuAction::Race(r) => cur.is_some_and(|c| c.0 == r),
             MenuAction::Sex(s) => cur.is_some_and(|c| c.1 == s),
             MenuAction::Class(i) => selection.class == Some(i),
-            MenuAction::Map(i) => selection.map == i,
+            MenuAction::Map(i) => {
+                if is_moba {
+                    selection.map % MOBA_MAPS.len() == i
+                } else {
+                    selection.map == i
+                }
+            }
+            MenuAction::SelectHero(idx) => is_moba && active_hero_idx == idx,
+            MenuAction::FilterHeroType(f_opt) => is_moba && filter.0 == f_opt,
             MenuAction::ToggleGameMode
             | MenuAction::ToggleDraftMode
             | MenuAction::CycleHero
@@ -876,9 +1389,41 @@ pub(super) fn refresh_menu_ui(
                 lock.0 = selected;
             }
         }
+        if let Some(mut bc) = border_color {
+            if matches!(
+                *action,
+                MenuAction::SelectHero(_) | MenuAction::FilterHeroType(_) | MenuAction::Map(_)
+            ) {
+                let target_border = if selected {
+                    GOLD
+                } else if *interaction == Interaction::Hovered {
+                    Color::srgb(0.75, 0.65, 0.40)
+                } else {
+                    Color::srgb(0.35, 0.32, 0.25)
+                };
+                *bc = BorderColor::all(target_border);
+            }
+        }
+        if let Some(mut bg) = bg_color {
+            if matches!(
+                *action,
+                MenuAction::SelectHero(_) | MenuAction::FilterHeroType(_) | MenuAction::Map(_)
+            ) {
+                let target_bg = if selected {
+                    Color::srgba(0.28, 0.22, 0.08, 0.96)
+                } else if *interaction == Interaction::Hovered {
+                    Color::srgba(0.20, 0.18, 0.14, 0.94)
+                } else {
+                    Color::srgba(0.13, 0.12, 0.15, 0.90)
+                };
+                if bg.0 != target_bg {
+                    bg.0 = target_bg;
+                }
+            }
+        }
         if let Some(mut disabled) = disabled {
             let off = match *action {
-                MenuAction::Enter => cur.is_none(),
+                MenuAction::Enter => !is_moba && cur.is_none(),
                 MenuAction::ToggleDraftMode | MenuAction::CycleHero => !is_moba,
                 MenuAction::RerollBench => {
                     !is_moba
@@ -893,6 +1438,27 @@ pub(super) fn refresh_menu_ui(
             }
         }
         match *action {
+            MenuAction::SelectHero(idx) => {
+                let matches_filter = filter
+                    .0
+                    .is_none_or(|ht| MOBA_HEROES[idx].hero_type == ht);
+                let display = if matches_filter {
+                    Display::Flex
+                } else {
+                    Display::None
+                };
+                let want_h = if filter.0.is_some() {
+                    Val::Px(36.0)
+                } else {
+                    Val::Px(27.0)
+                };
+                if node.display != display {
+                    node.display = display;
+                }
+                if node.height != want_h {
+                    node.height = want_h;
+                }
+            }
             // As on the create screen, a class the race cannot be leaves the grid.
             MenuAction::Class(i) => {
                 let ok = cur.is_none_or(|(r, _)| {
@@ -944,21 +1510,22 @@ pub(super) fn refresh_menu_ui(
 
     let class = selection.class_def();
     if let Ok((mut t, mut color)) = texts.p0().single_mut() {
-        let want = if is_moba {
-            draft.active_player_card().display_title()
+        let (want_text, want_color) = if is_moba {
+            let card = draft.active_player_card();
+            let h = card.hero_def();
+            (card.display_title(), rgb(h.color))
         } else {
-            match (class, cur) {
+            let txt = match (class, cur) {
                 (Some(c), Some((r, _))) => format!("{} {}", race_name(r), c.name),
                 _ => String::new(),
-            }
+            };
+            (txt, class.map_or(GOLD, |c| rgb(c.color)))
         };
-        if t.0 != want {
-            t.0 = want;
+        if t.0 != want_text {
+            t.0 = want_text;
         }
-        // In the class's own colour, as the game's raid frames and chat show it.
-        let want = class.map_or(GOLD, |c| rgb(c.color));
-        if color.0 != want {
-            color.0 = want;
+        if color.0 != want_color {
+            color.0 = want_color;
         }
     }
 
@@ -994,12 +1561,25 @@ pub(super) fn refresh_menu_ui(
                     .join(", ")
             };
             format!(
-                "Type: {} ({})  |  Themes: [{}]  |  Rerolls: {}  |  Bench: {bench_str}",
+                "Selected: #{} {} [{} · {}]  |  Rerolls: {}  |  Bench: {bench_str}",
+                active_h.idx + 1,
+                active_h.name,
                 active_h.hero_type.label(),
                 active_h.damage_profile.label(),
-                active_h.themes_summary(),
                 draft.rerolls_left
             )
+        } else {
+            String::new()
+        };
+        if t.0 != want {
+            t.0 = want;
+        }
+    }
+
+    if let Ok(mut t) = texts.p3().single_mut() {
+        let want = if is_moba {
+            let active_h = draft.active_player_card().hero_def();
+            format_hero_dossier(active_h)
         } else {
             String::new()
         };

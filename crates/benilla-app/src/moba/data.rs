@@ -304,6 +304,16 @@ pub enum PowerType {
     Energy = 3,
 }
 
+impl PowerType {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Mana => "Mana",
+            Self::Rage => "Rage",
+            Self::Energy => "Energy",
+        }
+    }
+}
+
 /// Classic WoW 1.12 15-second PvP Diminishing Returns (DR) categories.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum CcCategory {
